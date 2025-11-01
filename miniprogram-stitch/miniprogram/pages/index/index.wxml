@@ -1,0 +1,35 @@
+<view class="container">
+  <view class="panel">
+    <button class="btn" bindtap="onChooseImages">选择图片</button>
+    <view class="row">
+      <text class="label">方向</text>
+      <switch checked="{{direction==='vertical'}}" bindchange="onToggleDirection"/> 
+      <text class="hint">纵向/横向</text>
+    </view>
+    <view class="row">
+      <text class="label">间距</text>
+      <slider min="0" max="60" step="1" value="{{gap}}" bindchange="onGapChange" bindchanging="onGapChanging" show-value/>
+    </view>
+  </view>
+
+  <scroll-view class="thumbs" scroll-x="true">
+    <block wx:for="{{images}}" wx:key="index">
+      <image class="thumb {{selectedIndex===index?'selected':''}}" src="{{item.tempFilePath}}" mode="aspectFill" data-index="{{index}}" bindtap="onSelectImage"/>
+    </block>
+  </scroll-view>
+
+  <view class="canvasWrap">
+    <canvas type="2d" id="preview" canvas-id="preview" style="width: 100%; height: {{canvasPreviewHeight}}px; background:#fff;"></canvas>
+  </view>
+
+  <view class="actions">
+    <button class="btn primary" bindtap="onStitch" disabled="{{images.length===0}}">开始拼图</button>
+    <button class="btn" bindtap="onSave" disabled="{{!stitchedTempPath}}">保存到相册</button>
+  </view>
+
+  <view class="actions">
+    <button class="btn" bindtap="onMoveLeft" disabled="{{selectedIndex<0}}">左移</button>
+    <button class="btn" bindtap="onMoveRight" disabled="{{selectedIndex<0}}">右移</button>
+    <button class="btn" bindtap="onClearImages" disabled="{{images.length===0}}">清空</button>
+  </view>
+</view>
