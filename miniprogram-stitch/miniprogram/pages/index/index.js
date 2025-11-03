@@ -75,30 +75,44 @@ Page({
 			// 2) 常规环境使用 chooseImage
 			if (!files.length) {
 				try {
-					const r = await this._pChooseImage({ count: remain, sizeType: ['original'], sourceType: ['album'] });
-					files = (r.tempFiles && r.tempFiles.length) ? r.tempFiles : (r.tempFilePaths || []).map(p => ({ tempFilePath: p }));
+					const r = await this._pChooseImage({ count: remain, sizeType: ['original','compressed'], sourceType: ['album','camera'] });
+					if (r.tempFiles && r.tempFiles.length) {
+						files = r.tempFiles.map(f => ({ tempFilePath: f.tempFilePath || f.path }));
+					} else {
+						files = (r.tempFilePaths || []).map(p => ({ tempFilePath: p }));
+					}
 				} catch (e2) { console.warn('chooseImage失败', e2); }
 			}
 			// 3) 兜底使用 chooseMedia
 			if (!files.length) {
 				try {
-					const r = await this._pChooseMedia({ count: remain, mediaType: ['image'], sizeType: ['original'], sourceType: ['album'] });
-					files = (r.tempFiles || []).map(f => ({ tempFilePath: f.tempFilePath }));
+					const r = await this._pChooseMedia({ count: remain, mediaType: ['image'], sizeType: ['original','compressed'], sourceType: ['album','camera'] });
+					files = (r.tempFiles || []).map(f => ({ tempFilePath: f.tempFilePath, width: f.width, height: f.height }));
 				} catch (e3) { console.warn('chooseMedia失败', e3); }
 			}
 
 			if (!files.length) throw new Error('未获取到文件');
         const detail = [];
-        for (const f of files) {
+			for (const f of files) {
 				let path = f.tempFilePath;
-				// 某些 HEIC/LivePhoto 可能直接 getImageInfo 失败，先尝试一次原路径获取
+				if (!path) { continue; }
 				let info;
-				try {
-					info = await this._pGetImageInfo(path);
-				} catch (e) {
-					// 转码兜底：compressImage 生成中间文件再获取信息
-					path = await tryTranscodeIfNeeded(path);
-					info = await this._pGetImageInfo(path);
+				// 若 chooseMedia 已返回宽高，直接使用，减少对 getImageInfo 依赖
+				if (f && f.width && f.height) {
+					info = { width: f.width, height: f.height, type: '', orientation: 1 };
+				} else {
+					// 某些 HEIC/LivePhoto 可能直接 getImageInfo 失败，做两级兜底
+					try {
+						info = await this._pGetImageInfo(path);
+					} catch (e) {
+						try {
+							path = await tryTranscodeIfNeeded(path);
+							info = await this._pGetImageInfo(path);
+						} catch (e2) {
+							// 最终兜底：保留路径，宽高暂缺，方向按 1 处理，避免整体失败
+							info = { width: 0, height: 0, type: '', orientation: 1 };
+						}
+					}
 				}
             detail.push({
 					tempFilePath: path,
@@ -149,16 +163,15 @@ onGapChanging(e) {
 			const { ctx } = createHighResCanvas(node, size.width, size.height);
 
 			try {
-                // 1) 预探测：若有图片缺少宽高，则用临时离屏画布加载一次获取天然尺寸
-                const probe = safeCreateOffscreenCanvas(node, 1, 1);
-                for (const it of images) {
-                    if (!it.width || !it.height) {
-                        try {
-                            const el = await loadImageFrom(probe, it.tempFilePath);
-                            it.width = el.width; it.height = el.height;
-                        } catch (pe) { /* 忽略，后续绘制仍会再尝试 */ }
-                    }
-                }
+				// 1) 预探测：若有图片缺少宽高，使用主画布节点加载一次获取天然尺寸（真机更稳定）
+				for (const it of images) {
+					if (!it.width || !it.height) {
+						try {
+							const el = await loadImageFrom(node, it.tempFilePath);
+							it.width = el.width; it.height = el.height;
+						} catch (pe) { /* 忽略，后续绘制仍会再尝试 */ }
+					}
+				}
 
                 // 2) 计算输出尺寸，严格避免放大；若仍有无效尺寸则提前提示
                 const allW = images.map(i => i.width || 0).filter(n => n > 0);
