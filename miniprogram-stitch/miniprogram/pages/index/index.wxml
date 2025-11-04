@@ -33,22 +33,31 @@
     </view>
   </view>
 
-  <!-- 提示文案（底部灰字） -->
-  <view class="tips">
+  <!-- 提示文案（底部灰字，可双击隐藏/显示） -->
+  <view wx:if="{{showTips}}" class="tips" bindtap="onTipsTap">
     <text>温馨提示：</text>
     <text> 1. 长按图片拖拽可变换位置</text>
-    <text> 2. 长按拼接按钮可进行拼图设置</text>
+    <text> 2. 长按底部拼接按钮可进行拼图设置</text>
     <text> 3. 拼接完成后的预览页面，长按图片可保存拼接图</text>
+    <text> 4. 熟悉提示后，双击温馨提示文字部分，可隐藏温馨提示</text>
   </view>
 
   <!-- 固定底栏：竖向/横向拼接（支持长按设置间距） -->
   <view class="fixedBar">
-    <button class="barBtn" bindtap="onStitchVertical" bindlongpress="onLongPressVertical" disabled="{{images.length===0 || isStitching}}">
-      <view class="barIcon v"></view>
+    <button class="barBtn" bindtap="onStitchVertical" bindlongpress="onLongPressVertical" disabled="{{isStitching}}">
+      <view class="barIcon v">
+        <view class="seg"></view>
+        <view class="seg"></view>
+        <view class="seg"></view>
+      </view>
       <text class="barText">竖向拼接</text>
     </button>
-    <button class="barBtn" bindtap="onStitchHorizontal" bindlongpress="onLongPressHorizontal" disabled="{{images.length===0 || isStitching}}">
-      <view class="barIcon h"></view>
+    <button class="barBtn" bindtap="onStitchHorizontal" bindlongpress="onLongPressHorizontal" disabled="{{isStitching}}">
+      <view class="barIcon h">
+        <view class="seg"></view>
+        <view class="seg"></view>
+        <view class="seg"></view>
+      </view>
       <text class="barText">横向拼接</text>
     </button>
   </view>
@@ -67,10 +76,7 @@
           <view class="stepBtn" bindtap="onGapInc">+</view>
         </view>
       </view>
-      <view class="row">
-        <text class="label"></text>
-        <slider min="0" max="20" step="1" value="{{gapTemp}}" bindchanging="onGapTempChanging" bindchange="onGapTempChange" show-value/>
-      </view>
+      <!-- 移除滑块，改为加减与数字输入，不再显示 slider -->
       <view class="row smallHint">
         <text class="label"></text>
         <text class="hint">图间距值在0～20</text>

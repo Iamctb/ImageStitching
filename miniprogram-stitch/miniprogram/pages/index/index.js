@@ -5,7 +5,7 @@ Page({
 	data: {
 		images: [],
 		direction: 'vertical',
-		gap: 8,
+		gap: 0,
 		stitchedTempPath: '',
 		canvasPreviewHeight: 240,
 		selectedIndex: -1,
@@ -32,6 +32,9 @@ Page({
 		gapTemp: 0,
 		showGapInput: false,
 		gapInputFocus: false,
+		// 温馨提示
+		showTips: true,
+		_lastTipsTap: 0,
 	},
 
 	// 空操作：用于遮罩拦截点击
@@ -144,12 +147,20 @@ Page({
 
 	// 底栏触发：竖向/横向拼接
 	onStitchVertical() {
-		if (this.data.isStitching || !(this.data.images||[]).length) return;
+		if (this.data.isStitching) return;
+		if (!(this.data.images || []).length) {
+			wx.showToast({ title: '请上传图片后，再进行拼图', icon: 'none' });
+			return;
+		}
 		this.setData({ direction: 'vertical' });
 		this.onStitch();
 	},
 	onStitchHorizontal() {
-		if (this.data.isStitching || !(this.data.images||[]).length) return;
+		if (this.data.isStitching) return;
+		if (!(this.data.images || []).length) {
+			wx.showToast({ title: '请上传图片后，再进行拼图', icon: 'none' });
+			return;
+		}
 		this.setData({ direction: 'horizontal' });
 		this.onStitch();
 	},
@@ -193,6 +204,17 @@ Page({
 	},
 	onGapInputConfirm(e) {
 		this.onGapInputBlur(e);
+	},
+
+	// 双击温馨提示隐藏/显示
+	onTipsTap() {
+		const now = Date.now();
+		const last = this.data._lastTipsTap || 0;
+		if (now - last < 300) {
+			this.setData({ showTips: !this.data.showTips, _lastTipsTap: 0 });
+		} else {
+			this.setData({ _lastTipsTap: now });
+		}
 	},
 
 	_getXYByIndex(index) {
@@ -282,6 +304,7 @@ Page({
     try {
 			const sys = wx.getSystemInfoSync();
 			let files = [];
+			let cancelled = false;
 			// 剩余可添加数量；开发者工具常见“单选”限制，通过多次点击实现“多选叠加”
 			const remain = Math.max(0, this.MAX_IMAGES - (this.data.images ? this.data.images.length : 0));
 			if (remain <= 0) {
@@ -293,10 +316,10 @@ Page({
 				try {
 					const r = await this._pChooseMessageFile({ count: remain, type: 'image', extension: ['jpg','jpeg','png','webp','heic','heif'] });
 					files = (r.tempFiles || []).map(f => ({ tempFilePath: f.path }));
-				} catch (e1) { console.warn('chooseMessageFile失败', e1); }
+				} catch (e1) { if ((e1 && e1.errMsg || '').includes('cancel')) { cancelled = true; } console.warn('chooseMessageFile失败', e1); }
 			}
 			// 2) 常规环境使用 chooseImage
-			if (!files.length) {
+			if (!files.length && !cancelled) {
 				try {
 					const r = await this._pChooseImage({ count: remain, sizeType: ['original','compressed'], sourceType: ['album','camera'] });
 					if (r.tempFiles && r.tempFiles.length) {
@@ -304,17 +327,17 @@ Page({
 					} else {
 						files = (r.tempFilePaths || []).map(p => ({ tempFilePath: p }));
 					}
-				} catch (e2) { console.warn('chooseImage失败', e2); }
+				} catch (e2) { if ((e2 && e2.errMsg || '').includes('cancel')) { cancelled = true; } console.warn('chooseImage失败', e2); }
 			}
 			// 3) 兜底使用 chooseMedia
-			if (!files.length) {
+			if (!files.length && !cancelled) {
 				try {
 					const r = await this._pChooseMedia({ count: remain, mediaType: ['image'], sizeType: ['original','compressed'], sourceType: ['album','camera'] });
 					files = (r.tempFiles || []).map(f => ({ tempFilePath: f.tempFilePath, width: f.width, height: f.height }));
-				} catch (e3) { console.warn('chooseMedia失败', e3); }
+				} catch (e3) { if ((e3 && e3.errMsg || '').includes('cancel')) { cancelled = true; } console.warn('chooseMedia失败', e3); }
 			}
 
-			if (!files.length) throw new Error('未获取到文件');
+			if (cancelled || !files.length) { return; }
         const detail = [];
 			for (const f of files) {
 				let path = f.tempFilePath;
