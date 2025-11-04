@@ -12,24 +12,52 @@
     </view>
   </view>
 
-  <scroll-view class="thumbs" scroll-x="true">
-    <block wx:for="{{images}}" wx:key="index">
-      <image class="thumb {{selectedIndex===index?'selected':''}}" src="{{item.tempFilePath}}" mode="aspectFill" data-index="{{index}}" bindtap="onSelectImage"/>
+  <movable-area class="thumbArea" style="height: {{thumbsHeight}}px;">
+    <block wx:for="{{images}}" wx:key="tempFilePath">
+      <movable-view class="thumbMV" direction="all" inertia="false" out-of-bounds="true" damping="60" friction="2" x="{{item.x}}" y="{{item.y}}" style="width: {{thumbWpx}}px; height: {{thumbWpx}}px;" data-index="{{index}}" bindtouchstart="onDragStart" bindchange="onDragMoving" bindtouchend="onDragEnd">
+        <view class="thumbBox {{selectedIndex===index?'selected':''}}" data-index="{{index}}" bindtap="onTapThumb">
+          <image class="thumbImg" src="{{item.tempFilePath}}" mode="aspectFill"/>
+          <view class="delBadge" catchtap="onTapDeleteBadge" data-index="{{index}}">×</view>
+        </view>
+      </movable-view>
     </block>
-  </scroll-view>
+  </movable-area>
 
   <view class="canvasWrap">
     <canvas type="2d" id="preview" canvas-id="preview" style="width: 100%; height: {{canvasPreviewHeight}}px; background:#fff;"></canvas>
+    <!-- 预览手势层：点击预览整图，长按弹出保存提示（非拼图时不拦截滑动） -->
+    <view class="previewHit" bindtap="onTapPreview" bindlongpress="onLongPressPreview"></view>
+  </view>
+
+  <!-- 拼图中：全屏遮罩 + 居中进度条，拦截所有操作 -->
+  <view wx:if="{{isStitching}}" class="busyMask" catchtouchmove="true" catchtap="noop">
+    <view class="busyBox">
+      <view class="progressBar">
+        <view class="progressInner" style="width: {{stitchProgress}}%;"></view>
+      </view>
+      <text class="progressText">{{stitchProgress}}%</text>
+      <text class="progressNote">拼图进行中，请不要关闭页面</text>
+    </view>
   </view>
 
   <view class="actions">
-    <button class="btn primary" bindtap="onStitch" disabled="{{images.length===0}}">开始拼图</button>
+    <button class="btn primary" bindtap="onStitch" loading="{{isStitching}}" disabled="{{images.length===0 || isStitching || !!stitchedTempPath}}">开始拼图</button>
     <button class="btn" bindtap="onSave" disabled="{{!stitchedTempPath}}">保存到相册</button>
   </view>
 
   <view class="actions">
-    <button class="btn" bindtap="onMoveLeft" disabled="{{selectedIndex<0}}">左移</button>
-    <button class="btn" bindtap="onMoveRight" disabled="{{selectedIndex<0}}">右移</button>
     <button class="btn" bindtap="onClearImages" disabled="{{images.length===0}}">清空</button>
+  </view>
+
+  <!-- 删除确认对话框 -->
+  <view wx:if="{{showDeleteModal}}" class="modalRoot">
+    <view class="modalMask" catchtouchmove="true" bindtap="onCancelDelete"></view>
+    <view class="modalBody">
+      <image class="modalImg" src="{{modalImage}}" mode="aspectFit"/>
+      <view class="modalBtns">
+        <button class="btn" bindtap="onCancelDelete">不删除</button>
+        <button class="btn primary" bindtap="onConfirmDelete">确认删除</button>
+      </view>
+    </view>
   </view>
 </view>

@@ -9,6 +9,80 @@ Page({
 		stitchedTempPath: '',
 		canvasPreviewHeight: 240,
 		selectedIndex: -1,
+		// 拼图进度
+		isStitching: false,
+		stitchProgress: 0,
+		// 缩略图拖拽网格参数
+		thumbWpx: 0,
+		thumbGapPx: 0,
+		columns: 1,
+		thumbsHeight: 0,
+		dragging: false,
+		dragIndex: -1,
+		dragShadowIndex: -1,
+		// 删除对话框
+		showDeleteModal: false,
+		modalImage: '',
+		modalIndex: -1,
+	},
+
+	// 空操作：用于遮罩拦截点击
+	noop() {},
+
+	// 拖拽开始
+	onDragStart(e) {
+		const idx = e.currentTarget.dataset.index;
+		const imgs = this.data.images.slice();
+		// 提高被拖拽项层级：将其放到数组末尾渲染层级更高（不改变逻辑位置）
+		// 这里不重排，只记录索引
+		this.setData({ dragging: true, dragIndex: idx, dragShadowIndex: idx });
+	},
+
+	// 拖拽过程中：根据当前位置计算目标索引并重排
+	onDragMoving(e) {
+		if (!this.data.dragging) return;
+		const { x, y, source } = e.detail || {};
+		if (source !== 'touch') return;
+		const to = this._computeCellIndex(x, y);
+		let imgs = this._withShadowPositions(this.data.images, this.data.dragIndex, to);
+		// 被拖拽项直接跟随手指
+		imgs[this.data.dragIndex] = { ...imgs[this.data.dragIndex], x, y };
+		this.setData({ images: imgs, dragShadowIndex: to, stitchedTempPath: '', stitchProgress: 0 });
+	},
+
+	// 拖拽结束：收尾
+	onDragEnd() {
+		const { dragIndex, dragShadowIndex } = this.data;
+		if (dragIndex < 0) { this.setData({ dragging: false, dragShadowIndex: -1 }); return; }
+		const arr = this.data.images.slice();
+		// 将被拖拽项吸附到网格目标位
+		const snap = this._getXYByIndex(dragShadowIndex);
+		arr[dragIndex] = { ...arr[dragIndex], x: snap.x, y: snap.y };
+		// 重排数组，但保留各自已有 x/y（其它项在拖拽中已被放到目标位）
+		const moved = this._moveItem(arr, dragIndex, dragShadowIndex);
+		this._updateThumbsHeightByLength(moved.length);
+		this.setData({ images: moved, dragging: false, dragIndex: -1, dragShadowIndex: -1, stitchedTempPath: '' });
+	},
+
+	// 删除角标
+	onTapDeleteBadge(e) {
+		const idx = e.currentTarget.dataset.index;
+		const it = this.data.images[idx];
+		if (!it) return;
+		this.setData({ showDeleteModal: true, modalImage: it.tempFilePath, modalIndex: idx });
+	},
+
+	onConfirmDelete() {
+		const idx = this.data.modalIndex;
+		if (idx < 0) { this.setData({ showDeleteModal: false }); return; }
+		const arr = this.data.images.slice();
+		arr.splice(idx, 1);
+		const laid = this._layoutImages(arr);
+		this.setData({ images: laid, selectedIndex: -1, showDeleteModal: false, modalImage: '', modalIndex: -1, stitchedTempPath: '', stitchProgress: 0 });
+	},
+
+	onCancelDelete() {
+		this.setData({ showDeleteModal: false, modalImage: '', modalIndex: -1 });
 	},
 
 	// 可选最大图片数（可按需调整）
@@ -16,7 +90,88 @@ Page({
 
 	onLoad() {
 		const info = wx.getSystemInfoSync();
-		this.setData({ canvasPreviewHeight: calcPreviewHeight(info.windowWidth, 3/4) });
+		const pxPerRpx = info.windowWidth / 750;
+		const thumbWpx = Math.round(pxPerRpx * 160);
+		const thumbGapPx = Math.round(pxPerRpx * 12);
+		// 预留左右内边距约 32rpx
+		const innerWidth = info.windowWidth - Math.round(pxPerRpx * 32);
+		const columns = Math.max(1, Math.floor(innerWidth / (thumbWpx + thumbGapPx)));
+		this.setData({
+			canvasPreviewHeight: calcPreviewHeight(info.windowWidth, 3/4),
+			thumbWpx,
+			thumbGapPx,
+			columns,
+			thumbsHeight: thumbWpx + thumbGapPx,
+		});
+	},
+
+	// 计算并布局缩略图坐标
+	_layoutImages(list) {
+		const { columns, thumbWpx, thumbGapPx } = this.data;
+		const laid = list.map((it, idx) => {
+			const col = idx % columns;
+			const row = Math.floor(idx / columns);
+			return { ...it, x: col * (thumbWpx + thumbGapPx), y: row * (thumbWpx + thumbGapPx) };
+		});
+		const rows = Math.max(1, Math.ceil(laid.length / columns));
+		const thumbsHeight = rows * (thumbWpx + thumbGapPx);
+		this.setData({ thumbsHeight });
+		return laid;
+	},
+
+	_moveItem(arr, from, to) {
+		if (from === to || from < 0 || to < 0 || from >= arr.length || to >= arr.length) return arr;
+		const copy = arr.slice();
+		const [it] = copy.splice(from, 1);
+		copy.splice(to, 0, it);
+		return copy;
+	},
+
+	_getXYByIndex(index) {
+		const { columns, thumbWpx, thumbGapPx } = this.data;
+		const cell = thumbWpx + thumbGapPx;
+		const col = index % columns; const row = Math.floor(index / columns);
+		return { x: col * cell, y: row * cell };
+	},
+
+	_updateThumbsHeightByLength(len) {
+		const { columns, thumbWpx, thumbGapPx } = this.data;
+		const rows = Math.max(1, Math.ceil(len / columns));
+		this.setData({ thumbsHeight: rows * (thumbWpx + thumbGapPx) });
+	},
+
+	// 计算落点索引（以缩略图中心所在格为准）
+	_computeCellIndex(x, y) {
+		const { columns, thumbWpx, thumbGapPx, images } = this.data;
+		const cell = thumbWpx + thumbGapPx;
+		const cx = x + thumbWpx / 2;
+		const cy = y + thumbWpx / 2;
+		let col = Math.floor(cx / cell);
+		let row = Math.floor(cy / cell);
+		if (col < 0) col = 0; if (col >= columns) col = columns - 1;
+		let to = row * columns + col;
+		if (to < 0) to = 0; if (to >= images.length) to = images.length - 1;
+		return to;
+	},
+
+	// 根据占位索引实时给非拖拽项设置目标坐标（不改变数组顺序）
+	_withShadowPositions(images, dragIndex, shadowIndex) {
+		const { columns, thumbWpx, thumbGapPx } = this.data;
+		const cell = thumbWpx + thumbGapPx;
+		const getXY = (idx) => {
+			const col = idx % columns; const row = Math.floor(idx / columns);
+			return { x: col * cell, y: row * cell };
+		};
+		const result = images.map((it, idx) => ({ ...it }));
+		for (let i = 0; i < result.length; i++) {
+			if (i === dragIndex) continue; // 拖拽项由 onDragMoving 直接设置 x/y
+			let logicalIndex = i;
+			if (dragIndex < shadowIndex && i > dragIndex && i <= shadowIndex) logicalIndex = i - 1;
+			else if (dragIndex > shadowIndex && i >= shadowIndex && i < dragIndex) logicalIndex = i + 1;
+			const pos = getXY(logicalIndex);
+			result[i].x = pos.x; result[i].y = pos.y;
+		}
+		return result;
 	},
 
 	// 回调封装，兼容不支持 Promise 的基础库
@@ -134,7 +289,8 @@ Page({
             }
             if (dedup.length >= this.MAX_IMAGES) break;
         }
-        this.setData({ images: dedup, stitchedTempPath: '' });
+		const laid = this._layoutImages(dedup);
+		this.setData({ images: laid, stitchedTempPath: '', stitchProgress: 0 });
     } catch (e) {
 			const msg = (e && e.errMsg || '').includes('cancel') ? '已取消' : '选择失败';
 			wx.showToast({ title: msg, icon: 'none' });
@@ -142,20 +298,22 @@ Page({
 },
 
 	onToggleDirection(e) {
-		this.setData({ direction: e.detail.value ? 'vertical' : 'horizontal', stitchedTempPath: '' });
+		this.setData({ direction: e.detail.value ? 'vertical' : 'horizontal', stitchedTempPath: '', stitchProgress: 0 });
 	},
 
 	onGapChange(e) {
-		this.setData({ gap: e.detail.value || 0, stitchedTempPath: '' });
+		this.setData({ gap: e.detail.value || 0, stitchedTempPath: '', stitchProgress: 0 });
 	},
 
 onGapChanging(e) {
-    this.setData({ gap: e.detail.value || 0, stitchedTempPath: '' });
+		this.setData({ gap: e.detail.value || 0, stitchedTempPath: '', stitchProgress: 0 });
 },
 
 	onStitch: async function() {
     const { images, direction, gap } = this.data;
 		if (!images.length) return;
+		// 开始前复位状态
+		this.setData({ isStitching: true, stitchProgress: 1, stitchedTempPath: '' });
 		const query = wx.createSelectorQuery();
 		query.select('#preview').fields({ node: true, size: true }).exec(async (res) => {
 			const node = res[0].node;
@@ -164,6 +322,7 @@ onGapChanging(e) {
 
 			try {
 				// 1) 预探测：若有图片缺少宽高，使用主画布节点加载一次获取天然尺寸（真机更稳定）
+				let doneProbe = 0;
 				for (const it of images) {
 					if (!it.width || !it.height) {
 						try {
@@ -171,6 +330,10 @@ onGapChanging(e) {
 							it.width = el.width; it.height = el.height;
 						} catch (pe) { /* 忽略，后续绘制仍会再尝试 */ }
 					}
+					doneProbe++;
+					// 预探测阶段进度：1% -> 25%
+					const p = Math.min(25, Math.round(1 + (doneProbe / images.length) * 24));
+					this.setData({ stitchProgress: p });
 				}
 
                 // 2) 计算输出尺寸，严格避免放大；若仍有无效尺寸则提前提示
@@ -187,6 +350,7 @@ onGapChanging(e) {
                     outW = images.reduce((sum, i, idx) => sum + Math.round((i.width || 0) * (outH / (i.height || outH))) + (idx ? gapPx : 0), 0);
                 }
                 if (!outW || !outH) throw new Error('输出尺寸计算失败');
+				this.setData({ stitchProgress: 30 });
 
                 // 3) 离屏画布安全创建
                 const off = safeCreateOffscreenCanvas(node, outW, outH);
@@ -219,10 +383,15 @@ onGapChanging(e) {
 						drawWithOrientation(octx, bmp, 0, 0, bmp.width, bmp.height, cursorX, 0, drawW, outH, img.orientation);
 						cursorX += drawW + gapPx;
 					}
+
+					// 绘制阶段进度：30% -> 90%
+					const p2 = 30 + Math.round(((idx + 1) / images.length) * 60);
+					this.setData({ stitchProgress: Math.min(90, p2) });
 				}
 
                 // 4) 显式指定导出区域，避免出现仅导出第一张裁剪内容的问题
                 const tempPath = await safeCanvasToTempFilePath(off, 'png', outW, outH);
+				this.setData({ stitchProgress: 96 });
 
 				const previewBmp = await loadImageFrom(node, tempPath.tempFilePath);
 				ctx.clearRect(0, 0, size.width, size.height);
@@ -231,11 +400,12 @@ onGapChanging(e) {
 				const pvH = Math.round(outH * scale);
 				ctx.drawImage(previewBmp, 0, 0, outW, outH, (size.width - pvW)/2, (size.height - pvH)/2, pvW, pvH);
 
-                this.setData({ stitchedTempPath: tempPath.tempFilePath });
+				this.setData({ stitchedTempPath: tempPath.tempFilePath, stitchProgress: 100, isStitching: false });
 			} catch (err) {
                 console.error('拼图失败', err);
                 const msg = err && (err.errMsg || err.message) ? ('拼图失败：' + (err.errMsg || err.message)) : '拼图失败';
-                wx.showToast({ title: msg, icon: 'none' });
+				wx.showToast({ title: msg, icon: 'none' });
+				this.setData({ isStitching: false, stitchProgress: 0 });
 			}
 		});
 	},
@@ -255,8 +425,40 @@ onGapChanging(e) {
 		}
 	},
 
+	// 点击拼图预览：系统预览大图
+	onTapPreview() {
+		const { stitchedTempPath, isStitching } = this.data;
+		if (isStitching || !stitchedTempPath) return;
+		wx.previewImage({ current: stitchedTempPath, urls: [stitchedTempPath] });
+	},
+
+	// 长按拼图预览：弹框询问保存
+	onLongPressPreview() {
+		const { stitchedTempPath, isStitching } = this.data;
+		if (isStitching || !stitchedTempPath) return;
+		wx.showModal({
+			title: '是否保存到相册',
+			content: '保存后可在系统相册查看与分享',
+			confirmText: '保存到相册',
+			cancelText: '不用保存',
+			success: (res) => {
+				if (res.confirm) this.onSave();
+			}
+		});
+	},
+
 	onSelectImage(e) {
 		const idx = e.currentTarget.dataset.index;
+		this.setData({ selectedIndex: idx });
+	},
+
+	// 点击缩略图：预览原图
+	onTapThumb(e) {
+		if (this.data.dragging) return; // 正在拖拽时忽略点击
+		const idx = e.currentTarget.dataset.index;
+		const urls = (this.data.images || []).map(it => it.tempFilePath);
+		if (!urls.length) return;
+		wx.previewImage({ current: urls[idx], urls });
 		this.setData({ selectedIndex: idx });
 	},
 
@@ -265,7 +467,8 @@ onGapChanging(e) {
 		if (selectedIndex <= 0) return;
 		const arr = images.slice();
 		[arr[selectedIndex - 1], arr[selectedIndex]] = [arr[selectedIndex], arr[selectedIndex - 1]];
-		this.setData({ images: arr, selectedIndex: selectedIndex - 1, stitchedTempPath: '' });
+		const laid = this._layoutImages(arr);
+		this.setData({ images: laid, selectedIndex: selectedIndex - 1, stitchedTempPath: '', stitchProgress: 0 });
 	},
 
 	onMoveRight() {
@@ -273,11 +476,12 @@ onGapChanging(e) {
 		if (selectedIndex < 0 || selectedIndex >= images.length - 1) return;
 		const arr = images.slice();
 		[arr[selectedIndex + 1], arr[selectedIndex]] = [arr[selectedIndex], arr[selectedIndex + 1]];
-		this.setData({ images: arr, selectedIndex: selectedIndex + 1, stitchedTempPath: '' });
+		const laid = this._layoutImages(arr);
+		this.setData({ images: laid, selectedIndex: selectedIndex + 1, stitchedTempPath: '', stitchProgress: 0 });
 	},
 
 	onClearImages() {
-		this.setData({ images: [], stitchedTempPath: '', selectedIndex: -1 });
+		this.setData({ images: [], stitchedTempPath: '', selectedIndex: -1, thumbsHeight: this.data.thumbWpx + this.data.thumbGapPx, stitchProgress: 0 });
 	},
 });
 
