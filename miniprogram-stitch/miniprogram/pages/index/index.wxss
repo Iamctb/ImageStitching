@@ -1,5 +1,6 @@
 .container { padding: 16rpx; }
-.panel { background: #fff; border-radius: 16rpx; padding: 24rpx; box-shadow: 0 8rpx 24rpx rgba(0,0,0,0.04); }
+.panel { display: none; }
+/* 恢复 row 用于弹窗里的设置项 */
 .row { display: flex; align-items: center; margin-top: 16rpx; }
 .label { width: 120rpx; color: #333; }
 .hint { margin-left: 12rpx; color: #999; font-size: 24rpx; }
@@ -11,7 +12,14 @@
 .thumbBox.selected { outline: 4rpx solid #111827; }
 .thumbImg { width: 100%; height: 100%; display: block; }
 .delBadge { position: absolute; right: 4rpx; top: 4rpx; width: 40rpx; height: 40rpx; line-height: 40rpx; text-align: center; background: rgba(0,0,0,0.6); color: #fff; border-radius: 20rpx; font-size: 28rpx; }
+
+/* 上传占位卡片 */
+.addTile { position: absolute; border: 2rpx dashed #d1d5db; border-radius: 12rpx; background: #fff; display: flex; align-items: center; justify-content: center; flex-direction: column; color: #6b7280; }
+.addPlus { font-size: 64rpx; line-height: 1; }
+.addText { margin-top: 8rpx; font-size: 24rpx; }
+.addBadge { position: absolute; right: 8rpx; top: 8rpx; font-size: 24rpx; color: #ef4444; }
 .canvasWrap { background: #fff; border-radius: 16rpx; padding: 16rpx; box-shadow: 0 8rpx 24rpx rgba(0,0,0,0.04); position: relative; }
+.canvasWrap.hidden { display: none; height: 0; padding: 0; }
 .previewHit { position: absolute; left: 16rpx; right: 16rpx; top: 16rpx; bottom: 16rpx; }
 .actions { display: flex; gap: 16rpx; margin-top: 16rpx; }
 
@@ -26,9 +34,27 @@
 .busyBox { width: 80%; max-width: 520rpx; background: #fff; border-radius: 16rpx; padding: 24rpx; box-shadow: 0 12rpx 32rpx rgba(0,0,0,0.2); display: flex; align-items: center; gap: 16rpx; flex-wrap: wrap; justify-content: center; }
 .progressNote { width: 100%; text-align: center; color: #6b7280; font-size: 26rpx; margin-top: 8rpx; }
 
+/* 底部固定栏 */
+.fixedBar { position: fixed; left: 0; right: 0; bottom: 0; padding: 16rpx 24rpx calc(env(safe-area-inset-bottom) + 16rpx) 24rpx; background: #fff; box-shadow: 0 -8rpx 24rpx rgba(0,0,0,0.06); display: flex; justify-content: space-around; gap: 24rpx; }
+.barBtn { flex: 1; background: #f3f4f6; border-radius: 12rpx; padding: 16rpx 12rpx; display: flex; align-items: center; justify-content: center; gap: 12rpx; }
+.barBtn:disabled { opacity: 0.5; }
+.barIcon { width: 44rpx; height: 44rpx; background: #9ca3af; border-radius: 6rpx; position: relative; }
+.barIcon.v::after { content: ''; position: absolute; left: 50%; top: 6rpx; bottom: 6rpx; width: 8rpx; background: #fff; transform: translateX(-50%); }
+.barIcon.h::after { content: ''; position: absolute; top: 50%; left: 6rpx; right: 6rpx; height: 8rpx; background: #fff; transform: translateY(-50%); }
+.barText { color: #111827; font-size: 26rpx; }
+
+/* 底部提示小字 */
+.tips { color: #9ca3af; font-size: 22rpx; display: flex; flex-direction: column; gap: 6rpx; margin: 16rpx 8rpx 140rpx 8rpx; }
+
 /* 自定义对话框 */
 .modalRoot { position: fixed; left: 0; top: 0; right: 0; bottom: 0; z-index: 999; }
 .modalMask { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); }
 .modalBody { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 80%; background: #fff; border-radius: 16rpx; padding: 24rpx; box-shadow: 0 12rpx 32rpx rgba(0,0,0,0.2); }
+.modalTitle.center { text-align: center; font-size: 30rpx; font-weight: 600; margin-bottom: 8rpx; }
+.gapControls { display: flex; align-items: center; gap: 12rpx; }
+.stepBtn { width: 48rpx; height: 48rpx; line-height: 48rpx; text-align: center; background: #f3f4f6; border-radius: 8rpx; font-size: 32rpx; color: #111827; }
+.gapNumber { min-width: 64rpx; text-align: center; font-size: 28rpx; color: #111827; padding: 0 8rpx; }
+.gapInput { flex: 1; height: 64rpx; background: #f9fafb; border-radius: 8rpx; padding: 0 12rpx; }
+.smallHint .hint { color: #9ca3af; }
 .modalImg { width: 100%; height: 400rpx; object-fit: contain; border-radius: 12rpx; background: #f5f5f5; }
 .modalBtns { display: flex; justify-content: flex-end; gap: 16rpx; margin-top: 16rpx; }

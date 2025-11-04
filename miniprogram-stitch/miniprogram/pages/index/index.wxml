@@ -1,16 +1,5 @@
 <view class="container">
-  <view class="panel">
-    <button class="btn" bindtap="onChooseImages">选择图片</button>
-    <view class="row">
-      <text class="label">方向</text>
-      <switch checked="{{direction==='vertical'}}" bindchange="onToggleDirection"/> 
-      <text class="hint">纵向/横向</text>
-    </view>
-    <view class="row">
-      <text class="label">间距</text>
-      <slider min="0" max="60" step="1" value="{{gap}}" bindchange="onGapChange" bindchanging="onGapChanging" show-value/>
-    </view>
-  </view>
+  <!-- 顶部控制面板移除，采用缩略图后的上传卡片与底栏方向按钮 -->
 
   <movable-area class="thumbArea" style="height: {{thumbsHeight}}px;">
     <block wx:for="{{images}}" wx:key="tempFilePath">
@@ -21,12 +10,16 @@
         </view>
       </movable-view>
     </block>
+    <!-- 上传图片占位卡片（跟随缩略图末尾） -->
+    <view class="addTile" style="left: {{addX}}px; top: {{addY}}px; width: {{thumbWpx}}px; height: {{thumbWpx}}px;" bindtap="onChooseImages">
+      <view class="addPlus">+</view>
+      <text class="addText">上传图片</text>
+    </view>
   </movable-area>
 
-  <view class="canvasWrap">
-    <canvas type="2d" id="preview" canvas-id="preview" style="width: 100%; height: {{canvasPreviewHeight}}px; background:#fff;"></canvas>
-    <!-- 预览手势层：点击预览整图，长按弹出保存提示（非拼图时不拦截滑动） -->
-    <view class="previewHit" bindtap="onTapPreview" bindlongpress="onLongPressPreview"></view>
+  <!-- 隐藏预览画布，仅供内部绘制使用（不再显示预览框） -->
+  <view class="canvasWrap hidden">
+    <canvas type="2d" id="preview" canvas-id="preview" style="width: 100%; height: 1px; background:#fff;"></canvas>
   </view>
 
   <!-- 拼图中：全屏遮罩 + 居中进度条，拦截所有操作 -->
@@ -40,13 +33,57 @@
     </view>
   </view>
 
-  <view class="actions">
-    <button class="btn primary" bindtap="onStitch" loading="{{isStitching}}" disabled="{{images.length===0 || isStitching || !!stitchedTempPath}}">开始拼图</button>
-    <button class="btn" bindtap="onSave" disabled="{{!stitchedTempPath}}">保存到相册</button>
+  <!-- 提示文案（底部灰字） -->
+  <view class="tips">
+    <text>温馨提示：</text>
+    <text> 1. 长按图片拖拽可变换位置</text>
+    <text> 2. 长按拼接按钮可进行拼图设置</text>
+    <text> 3. 拼接完成后的预览页面，长按图片可保存拼接图</text>
   </view>
 
-  <view class="actions">
-    <button class="btn" bindtap="onClearImages" disabled="{{images.length===0}}">清空</button>
+  <!-- 固定底栏：竖向/横向拼接（支持长按设置间距） -->
+  <view class="fixedBar">
+    <button class="barBtn" bindtap="onStitchVertical" bindlongpress="onLongPressVertical" disabled="{{images.length===0 || isStitching}}">
+      <view class="barIcon v"></view>
+      <text class="barText">竖向拼接</text>
+    </button>
+    <button class="barBtn" bindtap="onStitchHorizontal" bindlongpress="onLongPressHorizontal" disabled="{{images.length===0 || isStitching}}">
+      <view class="barIcon h"></view>
+      <text class="barText">横向拼接</text>
+    </button>
+  </view>
+
+  
+  <!-- 拼接设置（长按拼接按钮） -->
+  <view wx:if="{{showGapModal}}" class="modalRoot">
+    <view class="modalMask" catchtouchmove="true" bindtap="onCancelGap"></view>
+    <view class="modalBody">
+      <view class="modalTitle center">{{gapModalTitle}}</view>
+      <view class="row">
+        <text class="label">图间距</text>
+        <view class="gapControls">
+          <view class="stepBtn" bindtap="onGapDec">-</view>
+          <view class="gapNumber" bindtap="onGapNumberTap">{{gapTemp}}</view>
+          <view class="stepBtn" bindtap="onGapInc">+</view>
+        </view>
+      </view>
+      <view class="row">
+        <text class="label"></text>
+        <slider min="0" max="20" step="1" value="{{gapTemp}}" bindchanging="onGapTempChanging" bindchange="onGapTempChange" show-value/>
+      </view>
+      <view class="row smallHint">
+        <text class="label"></text>
+        <text class="hint">图间距值在0～20</text>
+      </view>
+      <view wx:if="{{showGapInput}}" class="row">
+        <text class="label">输入</text>
+        <input class="gapInput" type="number" value="{{gapTemp}}" focus="{{gapInputFocus}}" bindblur="onGapInputBlur" bindconfirm="onGapInputConfirm"/>
+      </view>
+      <view class="modalBtns">
+        <button class="btn" bindtap="onCancelGap">取消</button>
+        <button class="btn primary" bindtap="onConfirmGap">确定</button>
+      </view>
+    </view>
   </view>
 
   <!-- 删除确认对话框 -->

@@ -17,6 +17,8 @@ Page({
 		thumbGapPx: 0,
 		columns: 1,
 		thumbsHeight: 0,
+		addX: 0,
+		addY: 0,
 		dragging: false,
 		dragIndex: -1,
 		dragShadowIndex: -1,
@@ -24,6 +26,12 @@ Page({
 		showDeleteModal: false,
 		modalImage: '',
 		modalIndex: -1,
+		// 拼接设置
+		showGapModal: false,
+		gapModalTitle: '',
+		gapTemp: 0,
+		showGapInput: false,
+		gapInputFocus: false,
 	},
 
 	// 空操作：用于遮罩拦截点击
@@ -113,9 +121,16 @@ Page({
 			const row = Math.floor(idx / columns);
 			return { ...it, x: col * (thumbWpx + thumbGapPx), y: row * (thumbWpx + thumbGapPx) };
 		});
-		const rows = Math.max(1, Math.ceil(laid.length / columns));
-		const thumbsHeight = rows * (thumbWpx + thumbGapPx);
-		this.setData({ thumbsHeight });
+		// 计算包含“上传图片”占位卡片后的行数，确保容器高度不被覆盖
+		const rowsWithAdd = Math.max(1, Math.ceil((laid.length + 1) / columns));
+		const thumbsHeight = rowsWithAdd * (thumbWpx + thumbGapPx);
+		// 计算上传卡片位置：紧随其后
+		const nextIdx = laid.length;
+		const ncol = nextIdx % columns;
+		const nrow = Math.floor(nextIdx / columns);
+		const addX = ncol * (thumbWpx + thumbGapPx);
+		const addY = nrow * (thumbWpx + thumbGapPx);
+		this.setData({ thumbsHeight, addX, addY });
 		return laid;
 	},
 
@@ -125,6 +140,59 @@ Page({
 		const [it] = copy.splice(from, 1);
 		copy.splice(to, 0, it);
 		return copy;
+	},
+
+	// 底栏触发：竖向/横向拼接
+	onStitchVertical() {
+		if (this.data.isStitching || !(this.data.images||[]).length) return;
+		this.setData({ direction: 'vertical' });
+		this.onStitch();
+	},
+	onStitchHorizontal() {
+		if (this.data.isStitching || !(this.data.images||[]).length) return;
+		this.setData({ direction: 'horizontal' });
+		this.onStitch();
+	},
+
+	// 长按底栏按钮：打开图间距设置
+	onLongPressVertical() {
+		this.setData({ showGapModal: true, gapModalTitle: '竖向拼接设置', gapTemp: Math.min(20, Math.max(0, this.data.gap || 0)) });
+	},
+	onLongPressHorizontal() {
+		this.setData({ showGapModal: true, gapModalTitle: '横向拼接设置', gapTemp: Math.min(20, Math.max(0, this.data.gap || 0)) });
+	},
+	onGapTempChanging(e) {
+		const v = e.detail.value || 0; this.setData({ gapTemp: v });
+	},
+	onGapTempChange(e) {
+		const v = e.detail.value || 0; this.setData({ gapTemp: v });
+	},
+	onCancelGap() { this.setData({ showGapModal: false }); },
+	onConfirmGap() {
+		const v = Math.min(20, Math.max(0, this.data.gapTemp || 0));
+		this.setData({ gap: v, showGapModal: false, stitchedTempPath: '', stitchProgress: 0 });
+	},
+
+	// 间距步进与直接输入
+	onGapDec() {
+		const v = Math.max(0, (this.data.gapTemp || 0) - 1);
+		this.setData({ gapTemp: v });
+	},
+	onGapInc() {
+		const v = Math.min(20, (this.data.gapTemp || 0) + 1);
+		this.setData({ gapTemp: v });
+	},
+	onGapNumberTap() {
+		this.setData({ showGapInput: true, gapInputFocus: true });
+	},
+	onGapInputBlur(e) {
+		let v = Number(e.detail.value);
+		if (Number.isNaN(v)) v = this.data.gapTemp || 0;
+		v = Math.min(20, Math.max(0, Math.round(v)));
+		this.setData({ gapTemp: v, showGapInput: false, gapInputFocus: false });
+	},
+	onGapInputConfirm(e) {
+		this.onGapInputBlur(e);
 	},
 
 	_getXYByIndex(index) {
@@ -401,6 +469,8 @@ onGapChanging(e) {
 				ctx.drawImage(previewBmp, 0, 0, outW, outH, (size.width - pvW)/2, (size.height - pvH)/2, pvW, pvH);
 
 				this.setData({ stitchedTempPath: tempPath.tempFilePath, stitchProgress: 100, isStitching: false });
+				// 拼接完成后直接预览整图
+				wx.previewImage({ current: tempPath.tempFilePath, urls: [tempPath.tempFilePath] });
 			} catch (err) {
                 console.error('拼图失败', err);
                 const msg = err && (err.errMsg || err.message) ? ('拼图失败：' + (err.errMsg || err.message)) : '拼图失败';
