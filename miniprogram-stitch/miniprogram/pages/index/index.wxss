@@ -36,14 +36,15 @@
 
 /* 底部固定栏 */
 .fixedBar { position: fixed; left: 0; right: 0; bottom: 0; padding: 8rpx 16rpx calc(env(safe-area-inset-bottom) + 8rpx) 16rpx; background: #fff; box-shadow: 0 -8rpx 24rpx rgba(0,0,0,0.06); display: flex; justify-content: space-around; gap: 12rpx; }
-.barBtn { flex: 1; background: transparent; border-radius: 12rpx; padding: 8rpx 8rpx; display: flex; align-items: center; justify-content: center; gap: 8rpx; flex-direction: column; }
+.barBtn {flex: 1; background: transparent; border-radius: 12rpx; padding: 8rpx 8rpx; display: flex; align-items: center; justify-content: center; gap: 8rpx; flex-direction: column; border: none; outline: none; box-shadow: none;}
+.barBtn::after { border: none; }
 .barBtn:disabled { opacity: 0.5; }
-.barIcon { width: 48rpx; height: 48rpx; border: 4rpx solid #6b7280; border-radius: 6rpx; position: relative; display: flex; align-items: center; justify-content: center; }
+.barIcon { width: 44rpx; height: 44rpx; position: relative; display: flex; align-items: center; justify-content: center; }
 .barIcon .seg { background: #6b7280; border-radius: 2rpx; }
 .barIcon.v { flex-direction: column; gap: 6rpx; }
-.barIcon.v .seg { width: 36rpx; height: 6rpx; }
+.barIcon.v .seg { width: 34rpx; height: 6rpx; }
 .barIcon.h { flex-direction: row; gap: 6rpx; }
-.barIcon.h .seg { width: 6rpx; height: 36rpx; }
+.barIcon.h .seg { width: 6rpx; height: 34rpx; }
 .barText { color: #111827; font-size: 26rpx; margin-top: 4rpx; }
 
 /* 底部提示小字 */

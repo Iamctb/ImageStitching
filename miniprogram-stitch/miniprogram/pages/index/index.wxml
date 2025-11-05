@@ -1,17 +1,17 @@
 <view class="container">
   <!-- 顶部控制面板移除，采用缩略图后的上传卡片与底栏方向按钮 -->
 
-  <movable-area class="thumbArea" style="height: {{thumbsHeight}}px;">
+  <movable-area class="thumbArea" style="height: {{thumbsHeight}}px;" bindtap="onBlankTap">
     <block wx:for="{{images}}" wx:key="tempFilePath">
       <movable-view class="thumbMV" direction="all" inertia="false" out-of-bounds="true" damping="60" friction="2" x="{{item.x}}" y="{{item.y}}" style="width: {{thumbWpx}}px; height: {{thumbWpx}}px;" data-index="{{index}}" bindtouchstart="onDragStart" bindchange="onDragMoving" bindtouchend="onDragEnd">
-        <view class="thumbBox {{selectedIndex===index?'selected':''}}" data-index="{{index}}" bindtap="onTapThumb">
+        <view class="thumbBox {{selectedIndex===index?'selected':''}}" data-index="{{index}}" catchtap="onTapThumb">
           <image class="thumbImg" src="{{item.tempFilePath}}" mode="aspectFill"/>
           <view class="delBadge" catchtap="onTapDeleteBadge" data-index="{{index}}">×</view>
         </view>
       </movable-view>
     </block>
     <!-- 上传图片占位卡片（跟随缩略图末尾） -->
-    <view class="addTile" style="left: {{addX}}px; top: {{addY}}px; width: {{thumbWpx}}px; height: {{thumbWpx}}px;" bindtap="onChooseImages">
+    <view class="addTile" style="left: {{addX}}px; top: {{addY}}px; width: {{thumbWpx}}px; height: {{thumbWpx}}px;" catchtap="onChooseImages">
       <view class="addPlus">+</view>
       <text class="addText">上传图片</text>
     </view>

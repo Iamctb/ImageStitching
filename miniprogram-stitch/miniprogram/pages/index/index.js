@@ -35,6 +35,7 @@ Page({
 		// 温馨提示
 		showTips: true,
 		_lastTipsTap: 0,
+		_lastBlankTap: 0,
 	},
 
 	// 空操作：用于遮罩拦截点击
@@ -210,10 +211,22 @@ Page({
 	onTipsTap() {
 		const now = Date.now();
 		const last = this.data._lastTipsTap || 0;
-		if (now - last < 300) {
+		if (now - last < 500) {
 			this.setData({ showTips: !this.data.showTips, _lastTipsTap: 0 });
 		} else {
 			this.setData({ _lastTipsTap: now });
+		}
+	},
+
+	// 空白区域双击：当温馨提示隐藏时可恢复显示
+	onBlankTap() {
+		if (this.data.showTips) return;
+		const now = Date.now();
+		const last = this.data._lastBlankTap || 0;
+		if (now - last < 500) {
+			this.setData({ showTips: true, _lastBlankTap: 0 });
+		} else {
+			this.setData({ _lastBlankTap: now });
 		}
 	},
 
