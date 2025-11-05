@@ -11,11 +11,14 @@
       </movable-view>
     </block>
     <!-- 上传图片占位卡片（跟随缩略图末尾） -->
-    <view class="addTile" style="left: {{addX}}px; top: {{addY}}px; width: {{thumbWpx}}px; height: {{thumbWpx}}px;" catchtap="onChooseImages">
+    <view wx:if="{{canAdd}}" class="addTile" style="left: {{addX}}px; top: {{addY}}px; width: {{thumbWpx}}px; height: {{thumbWpx}}px;" catchtap="onChooseImages">
       <view class="addPlus">+</view>
       <text class="addText">上传图片</text>
     </view>
   </movable-area>
+
+  <!-- 当温馨提示隐藏时，在缩略图区下方提供空白双击区域用于恢复提示 -->
+  <view wx:if="{{!showTips}}" class="blankTap" bindtap="onBlankTap"></view>
 
   <!-- 隐藏预览画布，仅供内部绘制使用（不再显示预览框） -->
   <view class="canvasWrap hidden">

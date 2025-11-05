@@ -19,6 +19,7 @@ Page({
 		thumbsHeight: 0,
 		addX: 0,
 		addY: 0,
+		canAdd: true,
 		dragging: false,
 		dragIndex: -1,
 		dragShadowIndex: -1,
@@ -115,6 +116,9 @@ Page({
 			columns,
 			thumbsHeight: thumbWpx + thumbGapPx,
 		});
+		// 初始化布局，确保显示“上传图片”卡片
+		const laid = this._layoutImages(this.data.images || []);
+		this.setData({ images: laid });
 	},
 
 	// 计算并布局缩略图坐标
@@ -125,16 +129,17 @@ Page({
 			const row = Math.floor(idx / columns);
 			return { ...it, x: col * (thumbWpx + thumbGapPx), y: row * (thumbWpx + thumbGapPx) };
 		});
-		// 计算包含“上传图片”占位卡片后的行数，确保容器高度不被覆盖
-		const rowsWithAdd = Math.max(1, Math.ceil((laid.length + 1) / columns));
-		const thumbsHeight = rowsWithAdd * (thumbWpx + thumbGapPx);
+		const canAdd = laid.length < this.MAX_IMAGES;
+		// 计算包含“上传图片”占位卡片后的行数（仅当可继续添加时才预留一格）
+		const rows = Math.max(1, Math.ceil((laid.length + (canAdd ? 1 : 0)) / columns));
+		const thumbsHeight = rows * (thumbWpx + thumbGapPx);
 		// 计算上传卡片位置：紧随其后
 		const nextIdx = laid.length;
 		const ncol = nextIdx % columns;
 		const nrow = Math.floor(nextIdx / columns);
 		const addX = ncol * (thumbWpx + thumbGapPx);
 		const addY = nrow * (thumbWpx + thumbGapPx);
-		this.setData({ thumbsHeight, addX, addY });
+		this.setData({ thumbsHeight, addX, addY, canAdd });
 		return laid;
 	},
 
@@ -444,8 +449,8 @@ onGapChanging(e) {
                 const allW = images.map(i => i.width || 0).filter(n => n > 0);
                 const allH = images.map(i => i.height || 0).filter(n => n > 0);
                 if (!allW.length || !allH.length) throw new Error('图片尺寸不可用');
-                const gapPx = gap;
-                let outW = 0, outH = 0;
+				const gapPx = gap;
+				let outW = 0, outH = 0;
                 if (direction === 'vertical') {
                     outW = Math.min.apply(null, allW);
                     outH = images.reduce((sum, i, idx) => sum + Math.round((i.height || 0) * (outW / (i.width || outW))) + (idx ? gapPx : 0), 0);
@@ -453,12 +458,38 @@ onGapChanging(e) {
                     outH = Math.min.apply(null, allH);
                     outW = images.reduce((sum, i, idx) => sum + Math.round((i.width || 0) * (outH / (i.height || outH))) + (idx ? gapPx : 0), 0);
                 }
-                if (!outW || !outH) throw new Error('输出尺寸计算失败');
+				if (!outW || !outH) throw new Error('输出尺寸计算失败');
+
+				// 限制画布最大尺寸（微信/设备上限通常为 16384）
+				const MAX_CANVAS_SIDE = 16384;
+				if (outW > MAX_CANVAS_SIDE || outH > MAX_CANVAS_SIDE) {
+					const scale = Math.min(MAX_CANVAS_SIDE / outW, MAX_CANVAS_SIDE / outH);
+					outW = Math.max(1, Math.floor(outW * scale));
+					outH = Math.max(1, Math.floor(outH * scale));
+				}
 				this.setData({ stitchProgress: 30 });
 
-                // 3) 离屏画布安全创建
-                const off = safeCreateOffscreenCanvas(node, outW, outH);
-				const octx = off.getContext('2d');
+				// 3) 离屏画布安全创建；若不可用则退回使用主画布进行合成
+				let off, octx, usedMain = false;
+				try {
+					off = safeCreateOffscreenCanvas(node, outW, outH);
+					octx = off.getContext('2d');
+				} catch (eOff) {
+					console.warn('Offscreen 不可用，回退主画布', eOff);
+					usedMain = true;
+					const backupW = node.width, backupH = node.height;
+					// 将主画布分辨率设为输出尺寸
+					node.width = outW; node.height = outH;
+					octx = node.getContext('2d');
+					if (octx && octx.setTransform) octx.setTransform(1, 0, 0, 1, 0, 0);
+					// 在 finally 中恢复预览
+					var __restoreMainCanvas = () => {
+						try {
+							// 恢复预览画布分辨率与上下文缩放
+							createHighResCanvas(node, size.width, size.height);
+						} catch(_) {}
+					};
+				}
 				octx.fillStyle = '#ffffff';
 				octx.fillRect(0, 0, outW, outH);
 
@@ -467,12 +498,12 @@ onGapChanging(e) {
 					const img = images[idx];
 					let bmp;
                     try {
-                        bmp = await loadImageFrom(off, img.tempFilePath);
+                        bmp = await loadImageFrom(usedMain ? node : off, img.tempFilePath);
                     } catch (err) {
                         // 解码失败兜底：先转码再加载；仍失败则从主画布加载
                         const convPath = await tryTranscodeIfNeeded(img.tempFilePath);
                         try {
-                            bmp = await loadImageFrom(off, convPath);
+                            bmp = await loadImageFrom(usedMain ? node : off, convPath);
                         } catch (e) {
                             bmp = await loadImageFrom(node, convPath);
                         }
@@ -494,7 +525,7 @@ onGapChanging(e) {
 				}
 
                 // 4) 显式指定导出区域，避免出现仅导出第一张裁剪内容的问题
-                const tempPath = await safeCanvasToTempFilePath(off, 'png', outW, outH);
+				const tempPath = await safeCanvasToTempFilePath(usedMain ? node : off, 'png', outW, outH);
 				this.setData({ stitchProgress: 96 });
 
 				const previewBmp = await loadImageFrom(node, tempPath.tempFilePath);
@@ -587,7 +618,8 @@ onGapChanging(e) {
 	},
 
 	onClearImages() {
-		this.setData({ images: [], stitchedTempPath: '', selectedIndex: -1, thumbsHeight: this.data.thumbWpx + this.data.thumbGapPx, stitchProgress: 0 });
+		const laid = this._layoutImages([]);
+		this.setData({ images: laid, stitchedTempPath: '', selectedIndex: -1, stitchProgress: 0 });
 	},
 });
 
