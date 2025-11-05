@@ -38,6 +38,9 @@ Page({
 		showTips: true, // 保留但不再用于隐藏，仅占位
 		tipsTransparent: false,
 		_lastTipsTap: 0,
+		// 多选删除
+		multiSelectMode: false,
+		selectedCount: 0,
 		_lastBlankTap: 0,
 	},
 
@@ -601,6 +604,10 @@ onGapChanging(e) {
 	onTapThumb(e) {
 		if (this.data.dragging) return; // 正在拖拽时忽略点击
 		const idx = e.currentTarget.dataset.index;
+		if (this.data.multiSelectMode) {
+			this._toggleSelectByIndex(idx);
+			return;
+		}
 		const urls = (this.data.images || []).map(it => it.tempFilePath);
 		if (!urls.length) return;
 		wx.previewImage({ current: urls[idx], urls });
@@ -614,6 +621,37 @@ onGapChanging(e) {
 			return;
 		}
 		this.onChooseImages();
+	},
+
+	// 长按进入多选模式
+	onLongPressThumb(e) {
+		if (this.data.multiSelectMode) return;
+		const imgs = (this.data.images || []).map(it => ({ ...it, selected: false }));
+		this.setData({ images: imgs, multiSelectMode: true, selectedCount: 0 });
+	},
+
+	// 角标/缩略图点击：切换选中
+	onToggleSelect(e) {
+		const idx = e.currentTarget.dataset.index;
+		this._toggleSelectByIndex(idx);
+	},
+	_toggleSelectByIndex(idx) {
+		const imgs = this.data.images.slice();
+		if (!imgs[idx]) return;
+		imgs[idx].selected = !imgs[idx].selected;
+		const selectedCount = imgs.filter(it => it.selected).length;
+		this.setData({ images: imgs, selectedCount });
+	},
+
+	onCancelSelect() {
+		const imgs = (this.data.images || []).map(it => ({ ...it, selected: false }));
+		this.setData({ images: imgs, multiSelectMode: false, selectedCount: 0 });
+	},
+
+	onDeleteSelected() {
+		const imgs = (this.data.images || []).filter(it => !it.selected);
+		const laid = this._layoutImages(imgs);
+		this.setData({ images: laid, multiSelectMode: false, selectedCount: 0, selectedIndex: -1, stitchedTempPath: '' });
 	},
 
 	onMoveLeft() {

@@ -4,9 +4,11 @@
   <movable-area class="thumbArea" style="height: {{thumbsHeight}}px;">
     <block wx:for="{{images}}" wx:key="tempFilePath">
       <movable-view class="thumbMV" direction="all" inertia="false" out-of-bounds="true" damping="60" friction="2" x="{{item.x}}" y="{{item.y}}" style="width: {{thumbWpx}}px; height: {{thumbWpx}}px;" data-index="{{index}}" bindtouchstart="onDragStart" bindchange="onDragMoving" bindtouchend="onDragEnd">
-        <view class="thumbBox {{selectedIndex===index?'selected':''}}" data-index="{{index}}" catchtap="onTapThumb">
+        <view class="thumbBox {{selectedIndex===index?'selected':''}}" data-index="{{index}}" catchtap="onTapThumb" bindlongpress="onLongPressThumb">
           <image class="thumbImg" src="{{item.tempFilePath}}" mode="aspectFill"/>
-          <view class="delBadge" catchtap="onTapDeleteBadge" data-index="{{index}}">×</view>
+          <view wx:if="{{multiSelectMode}}" class="selBadge {{item.selected?'checked':''}}" data-index="{{index}}" catchtap="onToggleSelect">
+            <text wx:if="{{item.selected}}" class="selTick">✓</text>
+          </view>
         </view>
       </movable-view>
     </block>
@@ -49,7 +51,7 @@
   
 
   <!-- 固定底栏：竖向/横向拼接（支持长按设置间距） -->
-  <view class="fixedBar">
+  <view class="fixedBar" wx:if="{{!multiSelectMode}}">
     <button class="barBtn" bindtap="onStitchVertical" bindlongpress="onLongPressVertical" disabled="{{isStitching}}">
       <view class="barIcon v">
         <view class="seg"></view>
@@ -65,6 +67,18 @@
         <view class="seg"></view>
       </view>
       <text class="barText">横向拼接</text>
+    </button>
+  </view>
+
+  <!-- 多选模式底栏 -->
+  <view class="fixedBar" wx:if="{{multiSelectMode}}">
+    <button class="barBtn" bindtap="onCancelSelect" disabled="{{isStitching}}">
+      <text class="barGlyph">↩︎</text>
+      <text class="barText">取消</text>
+    </button>
+    <button class="barBtn" bindtap="onDeleteSelected" disabled="{{selectedCount===0 || isStitching}}">
+      <text class="barGlyph">🗑️</text>
+      <text class="barText">删除所选图片</text>
     </button>
   </view>
 
