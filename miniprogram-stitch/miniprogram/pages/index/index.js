@@ -20,6 +20,7 @@ Page({
 		addX: 0,
 		addY: 0,
 		canAdd: true,
+		lastLayoutRows: 0,
 		dragging: false,
 		dragIndex: -1,
 		dragShadowIndex: -1,
@@ -34,7 +35,8 @@ Page({
 		showGapInput: false,
 		gapInputFocus: false,
 		// 温馨提示
-		showTips: true,
+		showTips: true, // 保留但不再用于隐藏，仅占位
+		tipsTransparent: false,
 		_lastTipsTap: 0,
 		_lastBlankTap: 0,
 	},
@@ -46,8 +48,7 @@ Page({
 	onDragStart(e) {
 		const idx = e.currentTarget.dataset.index;
 		const imgs = this.data.images.slice();
-		// 提高被拖拽项层级：将其放到数组末尾渲染层级更高（不改变逻辑位置）
-		// 这里不重排，只记录索引
+		// 开始拖拽：仅记录索引，保持高度与上传卡片位置不变
 		this.setData({ dragging: true, dragIndex: idx, dragShadowIndex: idx });
 	},
 
@@ -60,6 +61,7 @@ Page({
 		let imgs = this._withShadowPositions(this.data.images, this.data.dragIndex, to);
 		// 被拖拽项直接跟随手指
 		imgs[this.data.dragIndex] = { ...imgs[this.data.dragIndex], x, y };
+		// 在拖动过程中，不改变容器高度与上传卡片位置，避免文案抖动与卡片遮挡
 		this.setData({ images: imgs, dragShadowIndex: to, stitchedTempPath: '', stitchProgress: 0 });
 	},
 
@@ -73,8 +75,14 @@ Page({
 		arr[dragIndex] = { ...arr[dragIndex], x: snap.x, y: snap.y };
 		// 重排数组，但保留各自已有 x/y（其它项在拖拽中已被放到目标位）
 		const moved = this._moveItem(arr, dragIndex, dragShadowIndex);
-		this._updateThumbsHeightByLength(moved.length);
-		this.setData({ images: moved, dragging: false, dragIndex: -1, dragShadowIndex: -1, stitchedTempPath: '' });
+		// 拖拽结束：只在“行数变化”时才重新计算高度与上传卡片位置
+		const rowsNow = Math.max(1, Math.ceil((moved.length + 1) / this.data.columns));
+		if (rowsNow !== this.data.lastLayoutRows) {
+			const laid = this._layoutImages(moved);
+			this.setData({ images: laid, dragging: false, dragIndex: -1, dragShadowIndex: -1, stitchedTempPath: '' });
+		} else {
+			this.setData({ images: moved, dragging: false, dragIndex: -1, dragShadowIndex: -1, stitchedTempPath: '' });
+		}
 	},
 
 	// 删除角标
@@ -130,8 +138,8 @@ Page({
 			return { ...it, x: col * (thumbWpx + thumbGapPx), y: row * (thumbWpx + thumbGapPx) };
 		});
 		const canAdd = laid.length < this.MAX_IMAGES;
-		// 计算包含“上传图片”占位卡片后的行数（仅当可继续添加时才预留一格）
-		const rows = Math.max(1, Math.ceil((laid.length + (canAdd ? 1 : 0)) / columns));
+		// 始终为“上传图片”卡片预留一格，以便满额时卡片仍可见（禁用点击）
+		const rows = Math.max(1, Math.ceil((laid.length + 1) / columns));
 		const thumbsHeight = rows * (thumbWpx + thumbGapPx);
 		// 计算上传卡片位置：紧随其后
 		const nextIdx = laid.length;
@@ -139,7 +147,7 @@ Page({
 		const nrow = Math.floor(nextIdx / columns);
 		const addX = ncol * (thumbWpx + thumbGapPx);
 		const addY = nrow * (thumbWpx + thumbGapPx);
-		this.setData({ thumbsHeight, addX, addY, canAdd });
+		this.setData({ thumbsHeight, addX, addY, canAdd, lastLayoutRows: rows });
 		return laid;
 	},
 
@@ -217,7 +225,7 @@ Page({
 		const now = Date.now();
 		const last = this.data._lastTipsTap || 0;
 		if (now - last < 500) {
-			this.setData({ showTips: !this.data.showTips, _lastTipsTap: 0 });
+			this.setData({ tipsTransparent: !this.data.tipsTransparent, _lastTipsTap: 0 });
 		} else {
 			this.setData({ _lastTipsTap: now });
 		}
@@ -597,6 +605,15 @@ onGapChanging(e) {
 		if (!urls.length) return;
 		wx.previewImage({ current: urls[idx], urls });
 		this.setData({ selectedIndex: idx });
+	},
+
+	// 点击上传卡片
+	onTapAdd() {
+		if ((this.data.images || []).length >= this.MAX_IMAGES) {
+			wx.showToast({ title: `最多选择${this.MAX_IMAGES}张`, icon: 'none' });
+			return;
+		}
+		this.onChooseImages();
 	},
 
 	onMoveLeft() {

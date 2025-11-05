@@ -1,7 +1,7 @@
 <view class="container">
   <!-- 顶部控制面板移除，采用缩略图后的上传卡片与底栏方向按钮 -->
 
-  <movable-area class="thumbArea" style="height: {{thumbsHeight}}px;" bindtap="onBlankTap">
+  <movable-area class="thumbArea" style="height: {{thumbsHeight}}px;">
     <block wx:for="{{images}}" wx:key="tempFilePath">
       <movable-view class="thumbMV" direction="all" inertia="false" out-of-bounds="true" damping="60" friction="2" x="{{item.x}}" y="{{item.y}}" style="width: {{thumbWpx}}px; height: {{thumbWpx}}px;" data-index="{{index}}" bindtouchstart="onDragStart" bindchange="onDragMoving" bindtouchend="onDragEnd">
         <view class="thumbBox {{selectedIndex===index?'selected':''}}" data-index="{{index}}" catchtap="onTapThumb">
@@ -10,15 +10,25 @@
         </view>
       </movable-view>
     </block>
-    <!-- 上传图片占位卡片（跟随缩略图末尾） -->
-    <view wx:if="{{canAdd}}" class="addTile" style="left: {{addX}}px; top: {{addY}}px; width: {{thumbWpx}}px; height: {{thumbWpx}}px;" catchtap="onChooseImages">
-      <view class="addPlus">+</view>
-      <text class="addText">上传图片</text>
-    </view>
+    <!-- 上传图片占位卡片（同层 movable-view，避免被覆盖） -->
+    <movable-view class="thumbMV" direction="all" disabled="true" x="{{addX}}" y="{{addY}}" style="width: {{thumbWpx}}px; height: {{thumbWpx}}px;">
+      <view class="addTile" catchtap="onTapAdd">
+        <view class="addPlus">+</view>
+        <text class="addText">上传图片</text>
+      </view>
+    </movable-view>
   </movable-area>
 
-  <!-- 当温馨提示隐藏时，在缩略图区下方提供空白双击区域用于恢复提示 -->
-  <view wx:if="{{!showTips}}" class="blankTap" bindtap="onBlankTap"></view>
+  <!-- 温馨提示：容器始终存在，双击容器切换透明/恢复 -->
+  <view class="tips" bindtap="onTipsTap">
+    <view class="tipsInner {{tipsTransparent?'transparent':''}}">
+      <text>温馨提示：</text>
+      <text> 1. 长按图片拖拽可变换位置</text>
+      <text> 2. 长按底部拼接按钮可进行拼图设置</text>
+      <text> 3. 拼接完成后的预览页面，长按图片可保存拼接图</text>
+      <text> 4. 熟悉提示后，双击温馨提示区域，可隐藏/显示温馨提示</text>
+    </view>
+  </view>
 
   <!-- 隐藏预览画布，仅供内部绘制使用（不再显示预览框） -->
   <view class="canvasWrap hidden">
@@ -36,14 +46,7 @@
     </view>
   </view>
 
-  <!-- 提示文案（底部灰字，可双击隐藏/显示） -->
-  <view wx:if="{{showTips}}" class="tips" bindtap="onTipsTap">
-    <text>温馨提示：</text>
-    <text> 1. 长按图片拖拽可变换位置</text>
-    <text> 2. 长按底部拼接按钮可进行拼图设置</text>
-    <text> 3. 拼接完成后的预览页面，长按图片可保存拼接图</text>
-    <text> 4. 熟悉提示后，双击温馨提示文字部分，可隐藏温馨提示</text>
-  </view>
+  
 
   <!-- 固定底栏：竖向/横向拼接（支持长按设置间距） -->
   <view class="fixedBar">
