@@ -184,10 +184,30 @@ Page({
 
 	// 长按底栏按钮：打开图间距设置
 	onLongPressVertical() {
-		this.setData({ showGapModal: true, gapModalTitle: '竖向拼接设置', gapTemp: Math.min(20, Math.max(0, this.data.gap || 0)) });
+		const mode = this.data.verticalStitchMode || 'min';
+		this.setData({ 
+			showGapModal: true, 
+			gapModalTitle: '竖向拼接设置', 
+			gapTemp: Math.min(20, Math.max(0, this.data.gap || 0)),
+			modalDirection: 'vertical',
+			modeTemp: mode,
+			modeLabel1: '最小宽',
+			modeLabel2: '最大宽'
+		});
+		this._updateModeDesc('vertical', mode);
 	},
 	onLongPressHorizontal() {
-		this.setData({ showGapModal: true, gapModalTitle: '横向拼接设置', gapTemp: Math.min(20, Math.max(0, this.data.gap || 0)) });
+		const mode = this.data.horizontalStitchMode || 'min';
+		this.setData({ 
+			showGapModal: true, 
+			gapModalTitle: '横向拼接设置', 
+			gapTemp: Math.min(20, Math.max(0, this.data.gap || 0)),
+			modalDirection: 'horizontal',
+			modeTemp: mode,
+			modeLabel1: '最小高',
+			modeLabel2: '最大高'
+		});
+		this._updateModeDesc('horizontal', mode);
 	},
 	onGapTempChanging(e) {
 		const v = e.detail.value || 0; this.setData({ gapTemp: v });
@@ -198,7 +218,12 @@ Page({
 	onCancelGap() { this.setData({ showGapModal: false }); },
 	onConfirmGap() {
 		const v = Math.min(20, Math.max(0, this.data.gapTemp || 0));
-		this.setData({ gap: v, showGapModal: false, stitchedTempPath: '', stitchProgress: 0 });
+		const mode = this.data.modeTemp || 'min';
+		if (this.data.modalDirection === 'vertical') {
+			this.setData({ gap: v, verticalStitchMode: mode, showGapModal: false, stitchedTempPath: '', stitchProgress: 0 });
+		} else {
+			this.setData({ gap: v, horizontalStitchMode: mode, showGapModal: false, stitchedTempPath: '', stitchProgress: 0 });
+		}
 	},
 
 	// 间距步进与直接输入
@@ -221,6 +246,34 @@ Page({
 	},
 	onGapInputConfirm(e) {
 		this.onGapInputBlur(e);
+	},
+
+	onSelectMode(e) {
+		const mode = e.currentTarget.dataset.mode || 'min';
+		this.setData({ modeTemp: mode });
+		this._updateModeDesc(this.data.modalDirection, mode);
+	},
+
+	_updateModeDesc(direction, mode) {
+		let lines = [];
+		if (direction === 'vertical') {
+			if (mode === 'min') {
+				lines = ['✓ 清晰度：最佳（不放大）', '✓ 文件大小：较小', '✓ 速度：最快', '✓ 适用：追求清晰'];
+			} else if (mode === 'max') {
+				lines = ['✓ 对齐：整齐统一', '⚠ 清晰度：可能略降（放大）', '⚠ 文件大小：较大', '✓ 适用：追求美观'];
+			} else {
+				lines = ['✓ 清晰度：完美（原图）', '✓ 对齐：居中留白', '⚠ 文件大小：最大', '✓ 适用：专业用途'];
+			}
+		} else {
+			if (mode === 'min') {
+				lines = ['✓ 清晰度：最佳（不放大）', '✓ 文件大小：较小', '✓ 速度：最快', '✓ 适用：追求清晰'];
+			} else if (mode === 'max') {
+				lines = ['✓ 对齐：整齐统一', '⚠ 清晰度：可能略降（放大）', '⚠ 文件大小：较大', '✓ 适用：追求美观'];
+			} else {
+				lines = ['✓ 清晰度：完美（原图）', '✓ 对齐：居中留白', '⚠ 文件大小：最大', '✓ 适用：专业用途'];
+			}
+		}
+		this.setData({ modeDescLines: lines });
 	},
 
 	// 双击温馨提示隐藏/显示
@@ -429,134 +482,244 @@ onGapChanging(e) {
 		this.setData({ gap: e.detail.value || 0, stitchedTempPath: '', stitchProgress: 0 });
 },
 
-	onStitch: async function() {
-    const { images, direction, gap } = this.data;
-		if (!images.length) return;
-		// 开始前复位状态
-		this.setData({ isStitching: true, stitchProgress: 1, stitchedTempPath: '' });
-		const query = wx.createSelectorQuery();
-		query.select('#preview').fields({ node: true, size: true }).exec(async (res) => {
-			const node = res[0].node;
-			const size = res[0];
-			const { ctx } = createHighResCanvas(node, size.width, size.height);
-
-			try {
-				// 1) 预探测：若有图片缺少宽高，使用主画布节点加载一次获取天然尺寸（真机更稳定）
-				let doneProbe = 0;
-				for (const it of images) {
-					if (!it.width || !it.height) {
-						try {
-							const el = await loadImageFrom(node, it.tempFilePath);
-							it.width = el.width; it.height = el.height;
-						} catch (pe) { /* 忽略，后续绘制仍会再尝试 */ }
-					}
-					doneProbe++;
-					// 预探测阶段进度：1% -> 25%
-					const p = Math.min(25, Math.round(1 + (doneProbe / images.length) * 24));
-					this.setData({ stitchProgress: p });
-				}
-
-                // 2) 计算输出尺寸，严格避免放大；若仍有无效尺寸则提前提示
-                const allW = images.map(i => i.width || 0).filter(n => n > 0);
-                const allH = images.map(i => i.height || 0).filter(n => n > 0);
-                if (!allW.length || !allH.length) throw new Error('图片尺寸不可用');
-				const gapPx = gap;
-				let outW = 0, outH = 0;
-                if (direction === 'vertical') {
-                    outW = Math.min.apply(null, allW);
-                    outH = images.reduce((sum, i, idx) => sum + Math.round((i.height || 0) * (outW / (i.width || outW))) + (idx ? gapPx : 0), 0);
-                } else {
-                    outH = Math.min.apply(null, allH);
-                    outW = images.reduce((sum, i, idx) => sum + Math.round((i.width || 0) * (outH / (i.height || outH))) + (idx ? gapPx : 0), 0);
-                }
-				if (!outW || !outH) throw new Error('输出尺寸计算失败');
-
-				// 限制画布最大尺寸（微信/设备上限通常为 16384）
-				const MAX_CANVAS_SIDE = 16384;
-				if (outW > MAX_CANVAS_SIDE || outH > MAX_CANVAS_SIDE) {
-					const scale = Math.min(MAX_CANVAS_SIDE / outW, MAX_CANVAS_SIDE / outH);
-					outW = Math.max(1, Math.floor(outW * scale));
-					outH = Math.max(1, Math.floor(outH * scale));
-				}
-				this.setData({ stitchProgress: 30 });
-
-				// 3) 离屏画布安全创建；若不可用则退回使用主画布进行合成
-				let off, octx, usedMain = false;
-				try {
-					off = safeCreateOffscreenCanvas(node, outW, outH);
-					octx = off.getContext('2d');
-				} catch (eOff) {
-					console.warn('Offscreen 不可用，回退主画布', eOff);
-					usedMain = true;
-					const backupW = node.width, backupH = node.height;
-					// 将主画布分辨率设为输出尺寸
-					node.width = outW; node.height = outH;
-					octx = node.getContext('2d');
-					if (octx && octx.setTransform) octx.setTransform(1, 0, 0, 1, 0, 0);
-					// 在 finally 中恢复预览
-					var __restoreMainCanvas = () => {
-						try {
-							// 恢复预览画布分辨率与上下文缩放
-							createHighResCanvas(node, size.width, size.height);
-						} catch(_) {}
-					};
-				}
-				octx.fillStyle = '#ffffff';
-				octx.fillRect(0, 0, outW, outH);
-
-				let cursorX = 0, cursorY = 0;
-				for (let idx = 0; idx < images.length; idx++) {
-					const img = images[idx];
-					let bmp;
-                    try {
-                        bmp = await loadImageFrom(usedMain ? node : off, img.tempFilePath);
-                    } catch (err) {
-                        // 解码失败兜底：先转码再加载；仍失败则从主画布加载
-                        const convPath = await tryTranscodeIfNeeded(img.tempFilePath);
-                        try {
-                            bmp = await loadImageFrom(usedMain ? node : off, convPath);
-                        } catch (e) {
-                            bmp = await loadImageFrom(node, convPath);
-                        }
-                    }
-
-					if (direction === 'vertical') {
-						const drawH = Math.round(img.height * (outW / img.width));
-						drawWithOrientation(octx, bmp, 0, 0, bmp.width, bmp.height, 0, cursorY, outW, drawH, img.orientation);
-						cursorY += drawH + gapPx;
-					} else {
-						const drawW = Math.round(img.width * (outH / img.height));
-						drawWithOrientation(octx, bmp, 0, 0, bmp.width, bmp.height, cursorX, 0, drawW, outH, img.orientation);
-						cursorX += drawW + gapPx;
-					}
-
-					// 绘制阶段进度：30% -> 90%
-					const p2 = 30 + Math.round(((idx + 1) / images.length) * 60);
-					this.setData({ stitchProgress: Math.min(90, p2) });
-				}
-
-                // 4) 显式指定导出区域，避免出现仅导出第一张裁剪内容的问题
-				const tempPath = await safeCanvasToTempFilePath(usedMain ? node : off, 'png', outW, outH);
-				this.setData({ stitchProgress: 96 });
-
-				const previewBmp = await loadImageFrom(node, tempPath.tempFilePath);
-				ctx.clearRect(0, 0, size.width, size.height);
-				const scale = Math.min(size.width / outW, size.height / outH);
-				const pvW = Math.round(outW * scale);
-				const pvH = Math.round(outH * scale);
-				ctx.drawImage(previewBmp, 0, 0, outW, outH, (size.width - pvW)/2, (size.height - pvH)/2, pvW, pvH);
-
-				this.setData({ stitchedTempPath: tempPath.tempFilePath, stitchProgress: 100, isStitching: false });
-				// 拼接完成后直接预览整图
-				wx.previewImage({ current: tempPath.tempFilePath, urls: [tempPath.tempFilePath] });
-			} catch (err) {
-                console.error('拼图失败', err);
-                const msg = err && (err.errMsg || err.message) ? ('拼图失败：' + (err.errMsg || err.message)) : '拼图失败';
-				wx.showToast({ title: msg, icon: 'none' });
-				this.setData({ isStitching: false, stitchProgress: 0 });
+onStitch: async function() {
+	const { images, direction, gap } = this.data;
+	if (!images || !images.length) return;
+  
+	// 复位
+	this.setData({ isStitching: true, stitchProgress: 1, stitchedTempPath: '' });
+  
+	const query = wx.createSelectorQuery();
+	query.select('#preview').fields({ node: true, size: true }).exec(async (res) => {
+	  const node = res[0].node;
+	  const size = res[0]; // size.width size.height
+	  // 尝试读取设备像素比，保证高分辨率输出
+	  const sys = wx.getSystemInfoSync();
+	  const dpr = Math.max(1, sys.pixelRatio || 1);
+  
+	  // createHighResCanvas 可能已经做了 dpr 处理；若没有，后面会对 off canvas 强制处理
+	  const { ctx } = createHighResCanvas(node, size.width, size.height);
+  
+	  try {
+		// 1) 统一通过 wx.getImageInfo（或 loadImageFrom 获取的天然尺寸）来获取原始像素宽高
+		let doneProbe = 0;
+		for (const it of images) {
+		  try {
+			// 优先使用 wx.getImageInfo（更可靠拿到 naturalWidth/naturalHeight）
+			const info = await new Promise((resolve, reject) => {
+			  wx.getImageInfo({
+				src: it.tempFilePath,
+				success: (r) => resolve(r),
+				fail: (e) => reject(e)
+			  });
+			});
+			// wx.getImageInfo 返回的宽高就是图片原始像素
+			it.naturalWidth = info.width;
+			it.naturalHeight = info.height;
+			// 兼容原字段
+			it.width = it.width || info.width;
+			it.height = it.height || info.height;
+		  } catch (pe) {
+			// fallback：如果 getImageInfo 失败，尽量保留已有值或稍后从 node/loadImageFrom 再取
+			// 不要阻塞流程
+		  }
+		  doneProbe++;
+		  const p = Math.min(25, Math.round(1 + (doneProbe / images.length) * 24));
+		  this.setData({ stitchProgress: p });
+		}
+  
+		// 2) 计算目标（输出）尺寸 —— 基于天然像素，根据拼接方式确定
+		const allW = images.map(i => i.naturalWidth || i.width || 0).filter(n => n > 0);
+		const allH = images.map(i => i.naturalHeight || i.height || 0).filter(n => n > 0);
+		if (!allW.length || !allH.length) throw new Error('图片尺寸不可用');
+  
+		const gapPx = gap || 0;
+		const mode = (direction === 'vertical' ? this.data.verticalStitchMode : this.data.horizontalStitchMode) || 'min';
+		console.log('拼接参数', { direction, mode, gapPx });
+		
+		let outW = 0, outH = 0;
+		if (direction === 'vertical') {
+		  if (mode === 'min') {
+			// 最小宽：以最小宽为基准等比缩小
+			outW = Math.min.apply(null, allW);
+			outH = images.reduce((sum, i, idx) => {
+			  const iw = Math.max(1, i.naturalWidth || i.width || 1);
+			  const ih = Math.max(1, i.naturalHeight || i.height || 1);
+			  const drawH = ih * (outW / iw);
+			  return sum + drawH + (idx ? gapPx : 0);
+			}, 0);
+		  } else if (mode === 'max') {
+			// 最大宽：以最大宽为基准等比放大
+			outW = Math.max.apply(null, allW);
+			outH = images.reduce((sum, i, idx) => {
+			  const iw = Math.max(1, i.naturalWidth || i.width || 1);
+			  const ih = Math.max(1, i.naturalHeight || i.height || 1);
+			  const drawH = ih * (outW / iw);
+			  return sum + drawH + (idx ? gapPx : 0);
+			}, 0);
+		  } else {
+			// 原尺寸：保留原图，以最宽为画布宽度，居中对齐
+			outW = Math.max.apply(null, allW);
+			outH = images.reduce((sum, i, idx) => {
+			  const ih = Math.max(1, i.naturalHeight || i.height || 1);
+			  return sum + ih + (idx ? gapPx : 0);
+			}, 0);
+		  }
+		} else {
+		  if (mode === 'min') {
+			// 最小高：以最小高为基准等比缩小
+			outH = Math.min.apply(null, allH);
+			outW = images.reduce((sum, i, idx) => {
+			  const iw = Math.max(1, i.naturalWidth || i.width || 1);
+			  const ih = Math.max(1, i.naturalHeight || i.height || 1);
+			  const drawW = iw * (outH / ih);
+			  return sum + drawW + (idx ? gapPx : 0);
+			}, 0);
+		  } else if (mode === 'max') {
+			// 最大高：以最大高为基准等比放大
+			outH = Math.max.apply(null, allH);
+			outW = images.reduce((sum, i, idx) => {
+			  const iw = Math.max(1, i.naturalWidth || i.width || 1);
+			  const ih = Math.max(1, i.naturalHeight || i.height || 1);
+			  const drawW = iw * (outH / ih);
+			  return sum + drawW + (idx ? gapPx : 0);
+			}, 0);
+		  } else {
+			// 原尺寸：保留原图，以最高为画布高度，居中对齐
+			outH = Math.max.apply(null, allH);
+			outW = images.reduce((sum, i, idx) => {
+			  const iw = Math.max(1, i.naturalWidth || i.width || 1);
+			  return sum + iw + (idx ? gapPx : 0);
+			}, 0);
+		  }
+		}
+  
+		// 最终确保输出像素为整数
+		outW = Math.max(1, Math.round(outW));
+		outH = Math.max(1, Math.round(outH));
+		if (!outW || !outH) throw new Error('输出尺寸计算失败');
+		console.log('计算后尺寸', { outW, outH, mode });
+		
+		// 限制画布最大尺寸（微信/设备上限通常为 16384），并限制总像素避免内存溢出
+		const MAX_CANVAS_SIDE = 16384;
+		const MAX_TOTAL_PIXELS = 4096 * 4096; // 约16M像素，确保稳定性（真机内存有限）
+		let scaleDown = 1;
+		
+		// 检查边长限制
+		if (outW > MAX_CANVAS_SIDE || outH > MAX_CANVAS_SIDE) {
+			scaleDown = Math.min(MAX_CANVAS_SIDE / outW, MAX_CANVAS_SIDE / outH);
+		}
+		
+		// 检查总像素限制（更严格）
+		const totalPixels = outW * outH;
+		if (totalPixels > MAX_TOTAL_PIXELS) {
+			const pixelScale = Math.sqrt(MAX_TOTAL_PIXELS / totalPixels);
+			scaleDown = Math.min(scaleDown, pixelScale);
+		}
+		
+		if (scaleDown < 1) {
+			outW = Math.max(1, Math.floor(outW * scaleDown));
+			outH = Math.max(1, Math.floor(outH * scaleDown));
+			console.log('画布超限，缩放比例', scaleDown.toFixed(3), '最终尺寸', outW, 'x', outH, '=', (outW*outH/1000000).toFixed(1), 'M像素');
+			if (outW * outH > MAX_TOTAL_PIXELS) {
+				// 二次检查，强制限制
+				const finalScale = Math.sqrt(MAX_TOTAL_PIXELS / (outW * outH));
+				outW = Math.max(1, Math.floor(outW * finalScale));
+				outH = Math.max(1, Math.floor(outH * finalScale));
+				console.log('二次限制后', outW, 'x', outH, '=', (outW*outH/1000000).toFixed(1), 'M像素');
 			}
-		});
-	},
+		} else {
+			console.log('画布未超限，使用原始尺寸', outW, 'x', outH, '=', (outW*outH/1000000).toFixed(1), 'M像素');
+		}
+		this.setData({ stitchProgress: 30 });
+  
+		// 3) 创建离屏画布（直接用逻辑像素，不再乘 dpr）
+		const off = safeCreateOffscreenCanvas(node, outW, outH);
+		const octx = off.getContext('2d');
+		
+		// 启用高质量图像平滑，提升缩放清晰度
+		if (octx.imageSmoothingEnabled !== undefined) {
+			octx.imageSmoothingEnabled = true;
+		}
+		if (octx.imageSmoothingQuality !== undefined) {
+			try { octx.imageSmoothingQuality = 'high'; } catch(e) {}
+		}
+		
+		octx.fillStyle = '#ffffff';
+		octx.fillRect(0, 0, outW, outH);
+  
+		// 4) 绘制每张图片，根据拼接方式计算位置与尺寸
+		const scaledGap = Math.round(gapPx * scaleDown);
+		let cursorX = 0, cursorY = 0;
+		for (let idx = 0; idx < images.length; idx++) {
+		  const img = images[idx];
+		  let bmp;
+		  try {
+			bmp = await loadImageFrom(off, img.tempFilePath);
+		  } catch (err) {
+			const convPath = await tryTranscodeIfNeeded(img.tempFilePath);
+			try { bmp = await loadImageFrom(off, convPath); } catch (e) { bmp = await loadImageFrom(node, convPath); }
+		  }
+
+		  const naturalW = Math.max(1, img.naturalWidth || img.width || bmp.width);
+		  const naturalH = Math.max(1, img.naturalHeight || img.height || bmp.height);
+		  
+		  if (direction === 'vertical') {
+			if (mode === 'original') {
+			  // 原尺寸：保留原图宽高，按scaleDown缩放，左右居中
+			  const dw = Math.round(naturalW * scaleDown);
+			  const dh = Math.round(naturalH * scaleDown);
+			  const dx = Math.floor((outW - dw) / 2);
+			  drawWithOrientation(octx, bmp, 0, 0, bmp.width, bmp.height, dx, cursorY, dw, dh, img.orientation);
+			  cursorY += dh + scaledGap;
+			} else {
+			  // min/max：宽度=outW，高度按原图比例
+			  const drawH = Math.round(naturalH * (outW / naturalW));
+			  drawWithOrientation(octx, bmp, 0, 0, bmp.width, bmp.height, 0, cursorY, outW, drawH, img.orientation);
+			  cursorY += drawH + scaledGap;
+			}
+		  } else {
+			if (mode === 'original') {
+			  // 原尺寸：保留原图宽高，按scaleDown缩放，上下居中
+			  const dw = Math.round(naturalW * scaleDown);
+			  const dh = Math.round(naturalH * scaleDown);
+			  const dy = Math.floor((outH - dh) / 2);
+			  drawWithOrientation(octx, bmp, 0, 0, bmp.width, bmp.height, cursorX, dy, dw, dh, img.orientation);
+			  cursorX += dw + scaledGap;
+			} else {
+			  // min/max：高度=outH，宽度按原图比例
+			  const drawW = Math.round(naturalW * (outH / naturalH));
+			  drawWithOrientation(octx, bmp, 0, 0, bmp.width, bmp.height, cursorX, 0, drawW, outH, img.orientation);
+			  cursorX += drawW + scaledGap;
+			}
+		  }
+
+		  const p2 = 30 + Math.round(((idx + 1) / images.length) * 60);
+		  this.setData({ stitchProgress: Math.min(90, p2) });
+		}
+  
+		// 5) 导出
+		const tempPath = await safeCanvasToTempFilePath(off, 'png', outW, outH);
+		this.setData({ stitchProgress: 96 });
+
+		// 6) 预览绘制
+		const previewBmp = await loadImageFrom(node, tempPath.tempFilePath);
+		ctx.clearRect(0, 0, size.width, size.height);
+		const scaleFit = Math.min(size.width / outW, size.height / outH);
+		const pvW = Math.round(outW * scaleFit);
+		const pvH = Math.round(outH * scaleFit);
+		ctx.drawImage(previewBmp, 0, 0, outW, outH, (size.width - pvW) / 2, (size.height - pvH) / 2, pvW, pvH);
+
+		this.setData({ stitchedTempPath: tempPath.tempFilePath, stitchProgress: 100, isStitching: false });
+		wx.previewImage({ current: tempPath.tempFilePath, urls: [tempPath.tempFilePath] });
+	  } catch (err) {
+		console.error('拼图失败', err);
+		const msg = err && (err.errMsg || err.message) ? ('拼图失败：' + (err.errMsg || err.message)) : '拼图失败';
+		wx.showToast({ title: msg, icon: 'none' });
+		this.setData({ isStitching: false, stitchProgress: 0 });
+	  }
+	});
+  },
 
 	onSave: async function() {
 		const { stitchedTempPath } = this.data;

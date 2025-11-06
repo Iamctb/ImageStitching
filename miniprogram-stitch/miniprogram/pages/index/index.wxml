@@ -89,6 +89,22 @@
     <view class="modalBody">
       <view class="modalTitle center">{{gapModalTitle}}</view>
       <view class="row">
+        <text class="label">拼接方式</text>
+        <view class="modeSegment">
+          <view class="segItem {{modeTemp==='min'?'active':''}}" bindtap="onSelectMode" data-mode="min">{{modeLabel1}}</view>
+          <view class="segItem {{modeTemp==='max'?'active':''}}" bindtap="onSelectMode" data-mode="max">{{modeLabel2}}</view>
+          <view class="segItem {{modeTemp==='original'?'active':''}}" bindtap="onSelectMode" data-mode="original">原尺寸</view>
+        </view>
+      </view>
+      <view class="row" wx:if="{{modeDescLines.length}}">
+        <text class="label"></text>
+        <view class="modeDesc">
+          <block wx:for="{{modeDescLines}}" wx:key="index">
+            <text>{{item}}</text>
+          </block>
+        </view>
+      </view>
+      <view class="row">
         <text class="label">图间距</text>
         <view class="gapControls">
           <view class="stepBtn" bindtap="onGapDec">-</view>
@@ -96,7 +112,6 @@
           <view class="stepBtn" bindtap="onGapInc">+</view>
         </view>
       </view>
-      <!-- 移除滑块，改为加减与数字输入，不再显示 slider -->
       <view class="row smallHint">
         <text class="label"></text>
         <text class="hint">图间距值在0～20</text>
