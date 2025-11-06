@@ -96,8 +96,58 @@
           <view class="segItem {{modeTemp==='original'?'active':''}}" bindtap="onSelectMode" data-mode="original">原尺寸</view>
         </view>
       </view>
-      <view class="row" wx:if="{{modeDescLines.length}}">
-        <text class="label"></text>
+      <view class="rowNoLabel">
+        <view class="modePreview">
+          <view class="previewBox">
+            <text class="previewTitle">拼接前</text>
+            <view class="previewIcon {{modalDirection}}" wx:if="{{modalDirection==='vertical'}}">
+              <view class="pLine" style="width: 60%;"></view>
+              <view class="pLine" style="width: 100%;"></view>
+              <view class="pLine" style="width: 80%;"></view>
+            </view>
+            <view class="previewIcon {{modalDirection}}" wx:if="{{modalDirection==='horizontal'}}">
+              <view class="pLineH" style="height: 60%;"></view>
+              <view class="pLineH" style="height: 100%;"></view>
+              <view class="pLineH" style="height: 80%;"></view>
+            </view>
+          </view>
+          <text class="previewArrow">→</text>
+          <view class="previewBox">
+            <text class="previewTitle">拼接后</text>
+            <view class="previewIcon {{modalDirection}}" wx:if="{{modalDirection==='vertical' && modeTemp==='min'}}">
+              <view class="pLine" style="width: 60%;"></view>
+              <view class="pLine" style="width: 60%;"></view>
+              <view class="pLine" style="width: 60%;"></view>
+            </view>
+            <view class="previewIcon {{modalDirection}}" wx:if="{{modalDirection==='vertical' && modeTemp==='max'}}">
+              <view class="pLine" style="width: 100%;"></view>
+              <view class="pLine" style="width: 100%;"></view>
+              <view class="pLine" style="width: 100%;"></view>
+            </view>
+            <view class="previewIcon {{modalDirection}}" wx:if="{{modalDirection==='vertical' && modeTemp==='original'}}">
+              <view class="pLine centered" style="width: 60%;"></view>
+              <view class="pLine centered" style="width: 100%;"></view>
+              <view class="pLine centered" style="width: 80%;"></view>
+            </view>
+            <view class="previewIcon {{modalDirection}}" wx:if="{{modalDirection==='horizontal' && modeTemp==='min'}}">
+              <view class="pLineH" style="height: 60%;"></view>
+              <view class="pLineH" style="height: 60%;"></view>
+              <view class="pLineH" style="height: 60%;"></view>
+            </view>
+            <view class="previewIcon {{modalDirection}}" wx:if="{{modalDirection==='horizontal' && modeTemp==='max'}}">
+              <view class="pLineH" style="height: 100%;"></view>
+              <view class="pLineH" style="height: 100%;"></view>
+              <view class="pLineH" style="height: 100%;"></view>
+            </view>
+            <view class="previewIcon {{modalDirection}}" wx:if="{{modalDirection==='horizontal' && modeTemp==='original'}}">
+              <view class="pLineH centered" style="height: 60%;"></view>
+              <view class="pLineH centered" style="height: 100%;"></view>
+              <view class="pLineH centered" style="height: 80%;"></view>
+            </view>
+          </view>
+        </view>
+      </view>
+      <view class="rowNoLabel" wx:if="{{modeDescLines.length}}">
         <view class="modeDesc">
           <block wx:for="{{modeDescLines}}" wx:key="index">
             <text>{{item}}</text>
