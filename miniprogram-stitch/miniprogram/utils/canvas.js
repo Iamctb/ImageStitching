@@ -28,6 +28,30 @@ function loadImageFrom(node, src, options) {
     const opts = options || {};
     const timeout = typeof opts.timeout === 'number' ? opts.timeout : 4000;
     const allowGlobal = opts.allowGlobalFallback !== false;
+    const preferGlobal = !!opts.preferGlobal;
+    const hasGlobal = allowGlobal && typeof wx.createImage === 'function';
+    const hasNode = node && typeof node.createImage === 'function';
+    const creators = [];
+
+    const appendCreator = (type) => {
+        if (type === 'global' && hasGlobal) {
+            creators.push(() => wx.createImage());
+        } else if (type === 'node' && hasNode) {
+            creators.push(() => node.createImage());
+        }
+    };
+
+    if (preferGlobal) {
+        appendCreator('global');
+        appendCreator('node');
+    } else {
+        appendCreator('node');
+        appendCreator('global');
+    }
+
+    if (!creators.length) {
+        return Promise.reject(new Error('no image creator available'));
+    }
 
     const tryLoad = (creator) => new Promise((resolve, reject) => {
         let img;
@@ -86,12 +110,14 @@ function loadImageFrom(node, src, options) {
         img.src = src;
     });
 
-    return tryLoad(() => node.createImage()).catch((err) => {
-        if (!allowGlobal || typeof wx.createImage !== 'function') {
-            throw err;
+    const runSequential = (index, lastErr) => {
+        if (index >= creators.length) {
+            throw lastErr || new Error('load failed');
         }
-        return tryLoad(() => wx.createImage());
-    });
+        return tryLoad(creators[index]).catch((err) => runSequential(index + 1, err));
+    };
+
+    return runSequential(0, null);
 }
 
 // 计算预览区域高度，依据期望宽高比自适应

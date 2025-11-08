@@ -1,6 +1,9 @@
 // 引入工具方法：高分 canvas、图片加载、朝向绘制、导出、转码兜底、离屏画布创建
 const { createHighResCanvas, loadImageFrom, calcPreviewHeight, drawWithOrientation, safeCanvasToTempFilePath, tryTranscodeIfNeeded, safeCreateOffscreenCanvas } = require('../../utils/canvas.js');
 
+const SUPPORTED_IMAGE_TYPES = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'];
+const SAVED_PATH_REG = /^wxfile:\/\/(usr|store)/i;
+
 Page({
 	data: {
 		images: [],
@@ -100,7 +103,8 @@ Page({
 		const idx = this.data.modalIndex;
 		if (idx < 0) { this.setData({ showDeleteModal: false }); return; }
 		const arr = this.data.images.slice();
-		arr.splice(idx, 1);
+		const removed = arr.splice(idx, 1);
+		this._releaseImages(removed);
 		const laid = this._layoutImages(arr);
 		this.setData({ images: laid, selectedIndex: -1, showDeleteModal: false, modalImage: '', modalIndex: -1, stitchedTempPath: '', stitchProgress: 0 });
 	},
@@ -113,6 +117,9 @@ Page({
 	MAX_IMAGES: 12,
 
 	onLoad() {
+		if (!this._cacheRefs) {
+			this._cacheRefs = Object.create(null);
+		}
 		const info = wx.getSystemInfoSync();
 		const pxPerRpx = info.windowWidth / 750;
 		const thumbWpx = Math.round(pxPerRpx * 160);
@@ -167,6 +174,11 @@ Page({
 		});
 	},
 
+	onUnload() {
+		this._releaseImages(this.data.images || []);
+		this._releaseAllCacheFiles();
+	},
+
 	// 计算并布局缩略图坐标
 	_layoutImages(list) {
 		const { columns, thumbWpx, thumbGapPx } = this.data;
@@ -195,6 +207,148 @@ Page({
 		const [it] = copy.splice(from, 1);
 		copy.splice(to, 0, it);
 		return copy;
+	},
+
+	_registerCacheFile(path) {
+		if (!path) return;
+		if (!this._cacheRefs) this._cacheRefs = Object.create(null);
+		this._cacheRefs[path] = (this._cacheRefs[path] || 0) + 1;
+	},
+
+	_releaseCacheFile(path) {
+		if (!path || !this._cacheRefs) return;
+		const current = this._cacheRefs[path] || 0;
+		if (!current) return;
+		if (current <= 1) {
+			delete this._cacheRefs[path];
+			if (SAVED_PATH_REG.test(path)) {
+				wx.removeSavedFile({ filePath: path, complete: () => {} });
+			}
+		} else {
+			this._cacheRefs[path] = current - 1;
+		}
+	},
+
+	_releaseImage(info) {
+		if (!info) return;
+		const path = info.preparedPath || info.tempFilePath;
+		if (!path) return;
+		if (info._bitmap) {
+			try {
+				if (info._bitmap.onload) info._bitmap.onload = null;
+				if (info._bitmap.onerror) info._bitmap.onerror = null;
+			} catch(e) {}
+			info._bitmap = null;
+		}
+		if (info._cacheRegistered || SAVED_PATH_REG.test(path)) {
+			this._releaseCacheFile(path);
+			info._cacheRegistered = false;
+		}
+	},
+
+	_releaseImages(list) {
+		if (!Array.isArray(list)) return;
+		list.forEach(it => this._releaseImage(it));
+	},
+
+	_releaseAllCacheFiles() {
+		if (!this._cacheRefs) return;
+		const paths = Object.keys(this._cacheRefs);
+		paths.forEach(p => {
+			if (this._cacheRefs[p]) {
+				wx.removeSavedFile({ filePath: p, complete: () => {} });
+			}
+		});
+		this._cacheRefs = Object.create(null);
+	},
+
+	async _ensureSavedFile(path) {
+		if (!path) throw new Error('invalid path');
+		if (SAVED_PATH_REG.test(path)) {
+			this._registerCacheFile(path);
+			return path;
+		}
+		return await new Promise((resolve, reject) => {
+			wx.saveFile({
+				tempFilePath: path,
+				success: (res) => {
+					const saved = res.savedFilePath || res.filePath;
+					if (saved) {
+						this._registerCacheFile(saved);
+						resolve(saved);
+					} else {
+						reject(new Error('saveFile 缺少返回路径'));
+					}
+				},
+				fail: reject,
+			});
+		});
+	},
+
+	async _prepareSingleImage(img, index = 0) {
+		const cloned = { ...img };
+		const originPath = cloned.sourcePath || cloned.tempFilePath;
+		let path = cloned.preparedPath || cloned.tempFilePath;
+		let info;
+		try {
+			info = await this._pGetImageInfo(path);
+			if (info && info.path) path = info.path;
+		} catch (err) {
+			console.warn(`图片${index}信息读取失败，尝试转码`, err);
+			const conv = await tryTranscodeIfNeeded(path);
+			if (!conv || conv === path) {
+				throw err;
+			}
+			path = conv;
+			info = await this._pGetImageInfo(path);
+		}
+		let type = info && info.type ? String(info.type).toLowerCase() : '';
+		if (type && !SUPPORTED_IMAGE_TYPES.includes(type)) {
+			const conv2 = await tryTranscodeIfNeeded(path);
+			if (conv2 && conv2 !== path) {
+				path = conv2;
+				info = await this._pGetImageInfo(path);
+				type = info && info.type ? String(info.type).toLowerCase() : type;
+			}
+		}
+		const savedPath = await this._ensureSavedFile(path);
+		const prepared = {
+			...cloned,
+			sourcePath: originPath,
+			tempFilePath: savedPath,
+			preparedPath: savedPath,
+			preparedType: type || cloned.type || '',
+			naturalWidth: Math.max(1, info && info.width ? info.width : (cloned.naturalWidth || cloned.width || 1)),
+			naturalHeight: Math.max(1, info && info.height ? info.height : (cloned.naturalHeight || cloned.height || 1)),
+			width: Math.max(1, info && info.width ? info.width : (cloned.width || 1)),
+			height: Math.max(1, info && info.height ? info.height : (cloned.height || 1)),
+			orientation: info && info.orientation ? info.orientation : (cloned.orientation || 1),
+			prepared: true,
+			_cacheRegistered: true,
+		};
+		return prepared;
+	},
+
+	async _prepareImages(list) {
+		if (!Array.isArray(list) || !list.length) return [];
+		const prepared = [];
+		const newlyPrepared = [];
+		try {
+			for (let i = 0; i < list.length; i++) {
+				const item = list[i];
+				if (item && item.prepared && item.preparedPath && item.naturalWidth && item.naturalHeight) {
+					prepared.push(item);
+					continue;
+				}
+				const ready = await this._prepareSingleImage(item, i);
+				prepared.push(ready);
+				newlyPrepared.push(ready);
+			}
+			return prepared;
+		} catch (err) {
+			this._releaseImages(newlyPrepared);
+			throw err;
+		}
 	},
 
 	// 底栏触发：竖向/横向拼接
@@ -488,19 +642,26 @@ Page({
                 orientation: info.orientation
             });
         }
-        // 追加到现有列表后去重，并限制到 MAX_IMAGES
-        const existed = this.data.images ? this.data.images.slice() : [];
-        const merged = existed.concat(detail);
-        const seen = Object.create(null);
-        const dedup = [];
-        for (const it of merged) {
-            if (!seen[it.tempFilePath]) {
-                seen[it.tempFilePath] = 1;
-                dedup.push(it);
-            }
-            if (dedup.length >= this.MAX_IMAGES) break;
-        }
-		const laid = this._layoutImages(dedup);
+		// 追加到现有列表后去重，并限制到 MAX_IMAGES
+		const existed = this.data.images ? this.data.images.slice() : [];
+		const merged = existed.concat(detail);
+		const seen = Object.create(null);
+		const dedup = [];
+		for (const it of merged) {
+			if (!seen[it.tempFilePath]) {
+				seen[it.tempFilePath] = 1;
+				dedup.push(it);
+			}
+			if (dedup.length >= this.MAX_IMAGES) break;
+		}
+		wx.showLoading({ title: '正在优化图片', mask: true });
+		let preparedList;
+		try {
+			preparedList = await this._prepareImages(dedup);
+		} finally {
+			wx.hideLoading();
+		}
+		const laid = this._layoutImages(preparedList);
 		this.setData({ images: laid, stitchedTempPath: '', stitchProgress: 0 });
     } catch (e) {
 			const msg = (e && e.errMsg || '').includes('cancel') ? '已取消' : '选择失败';
@@ -521,8 +682,10 @@ onGapChanging(e) {
 },
 
 	onStitch: async function() {
-	const { images, direction, gap } = this.data;
-	if (!images || !images.length) return;
+	const { direction, gap } = this.data;
+	const originalImages = this.data.images ? this.data.images.map(it => ({ ...it })) : [];
+	if (!originalImages.length) return;
+	let images = originalImages;
   
 	// 复位
 	this.setData({ isStitching: true, stitchProgress: 1, stitchedTempPath: '' });
@@ -540,45 +703,31 @@ onGapChanging(e) {
 	  // 用于追踪需要释放的资源
 	  let off = null;
 	  let usedMain = false;
+	  let dataDirty = false;
   
 	  try {
-		// 1) 验证并刷新图片路径，获取原始像素宽高
+		// 1) 确保图片已预处理并具备稳定路径与尺寸
 		let doneProbe = 0;
-		for (const it of images) {
-		  try {
-			// 优先使用 wx.getImageInfo 验证路径有效性并获取尺寸
-			const info = await new Promise((resolve, reject) => {
-			  wx.getImageInfo({
-				src: it.tempFilePath,
-				success: (r) => resolve(r),
-				fail: (e) => reject(e)
-			  });
-			});
-			// 更新为 getImageInfo 返回的有效路径（可能与原路径不同）
-			it.tempFilePath = info.path || it.tempFilePath;
-			it.naturalWidth = info.width;
-			it.naturalHeight = info.height;
-			it.width = it.width || info.width;
-			it.height = it.height || info.height;
-			console.log(`图片${doneProbe}信息`, { path: it.tempFilePath, w: info.width, h: info.height });
-		  } catch (pe) {
-			// 路径失效，尝试转码生成新路径
-			console.warn(`图片${doneProbe}路径失效，尝试转码`, pe);
+		for (let idx = 0; idx < images.length; idx++) {
+		  let current = images[idx];
+		  if (!current || !current.prepared || !current.preparedPath || !current.naturalWidth || !current.naturalHeight) {
 			try {
-			  const convPath = await tryTranscodeIfNeeded(it.tempFilePath);
-			  const info2 = await new Promise((resolve, reject) => {
-				wx.getImageInfo({ src: convPath, success: resolve, fail: reject });
-			  });
-			  it.tempFilePath = convPath;
-			  it.naturalWidth = info2.width;
-			  it.naturalHeight = info2.height;
-			  it.width = info2.width;
-			  it.height = info2.height;
-			  console.log(`图片${doneProbe}转码后`, { path: convPath, w: info2.width, h: info2.height });
-			} catch (e2) {
-			  console.error(`图片${doneProbe}无法获取信息`, e2);
-			  // 保留已有值，后续尝试加载
+			  const prepared = await this._prepareSingleImage(current || {}, idx);
+			  images[idx] = prepared;
+			  current = prepared;
+			  dataDirty = true;
+			} catch (pe) {
+			  console.warn(`图片${idx}预处理失败，尝试继续`, pe);
+			  const fallback = current || {};
+			  fallback.naturalWidth = Math.max(1, fallback.naturalWidth || fallback.width || 1);
+			  fallback.naturalHeight = Math.max(1, fallback.naturalHeight || fallback.height || 1);
+			  images[idx] = fallback;
+			  current = fallback;
+			  dataDirty = true;
 			}
+		  } else {
+			current.naturalWidth = Math.max(1, current.naturalWidth || current.width || 1);
+			current.naturalHeight = Math.max(1, current.naturalHeight || current.height || 1);
 		  }
 		  doneProbe++;
 		  const p = Math.min(25, Math.round(1 + (doneProbe / images.length) * 24));
@@ -729,38 +878,83 @@ onGapChanging(e) {
 		
 		// 安卓离屏画布加载临时文件慢/不稳定，统一用主画布加载（快速且稳定）
 		const isAndroid = sys.platform === 'android';
-		const loadTimeout = isAndroid ? 2000 : 4000;
+		const baseTimeout = isAndroid ? 3000 : 4000;
 		
 		for (let idx = 0; idx < images.length; idx++) {
 		  const img = images[idx];
-		  let bmp;
-		  console.log(`开始加载图片${idx}`, img.tempFilePath);
+		  let bmp = img && img._bitmap && img._bitmap.width ? img._bitmap : null;
+		  let filePath = img.preparedPath || img.tempFilePath;
+		  console.log(`开始加载图片${idx}`, filePath);
 		  
-		  try {
-			// 安卓统一用主画布加载（避免离屏画布加载临时文件超时）
-			if (isAndroid) {
-			  bmp = await loadImageFrom(node, img.tempFilePath, { timeout: loadTimeout });
-			  console.log(`图片${idx}主画布加载成功`);
-			} else {
-			  // iOS优先尝试离屏画布
-			  try {
-				bmp = await loadImageFrom(usedMain ? node : off, img.tempFilePath, { timeout: loadTimeout });
-				console.log(`图片${idx}加载成功`);
-			  } catch (err) {
-				console.warn(`图片${idx}离屏加载失败，用主画布`, err);
-				bmp = await loadImageFrom(node, img.tempFilePath, { timeout: loadTimeout });
+		  if (!bmp) {
+			const preferSaved = isAndroid && SAVED_PATH_REG.test(filePath);
+			const timeout = preferSaved ? 6500 : baseTimeout;
+			const preferGlobal = preferSaved;
+			try {
+			  // 安卓统一用主画布加载（避免离屏画布加载临时文件超时）
+			  if (isAndroid) {
+				bmp = await loadImageFrom(node, filePath, { timeout, preferGlobal });
+				console.log(`图片${idx}主画布加载成功`);
+			  } else {
+				// iOS优先尝试离屏画布
+				try {
+				  bmp = await loadImageFrom(usedMain ? node : off, filePath, { timeout, preferGlobal });
+				  console.log(`图片${idx}加载成功`);
+				} catch (err) {
+				  console.warn(`图片${idx}离屏加载失败，用主画布`, err);
+				  bmp = await loadImageFrom(node, filePath, { timeout, preferGlobal });
+				}
+			  }
+			} catch (err) {
+			  // 加载失败，尝试转码
+			  console.warn(`加载图片${idx}失败，尝试转码`, err);
+			  const convPath = await tryTranscodeIfNeeded(filePath);
+			  try { 
+				const alreadySaved = SAVED_PATH_REG.test(convPath);
+				let savedConv;
+				if (alreadySaved) {
+				  savedConv = convPath;
+				} else {
+				  savedConv = await this._ensureSavedFile(convPath);
+				}
+				if (img._cacheRegistered && img.preparedPath && img.preparedPath !== savedConv) {
+				  this._releaseCacheFile(img.preparedPath);
+				  img._cacheRegistered = false;
+				}
+				if (!img._cacheRegistered) {
+				  if (alreadySaved) {
+					this._registerCacheFile(savedConv);
+				  }
+				  img._cacheRegistered = true;
+				}
+				img.tempFilePath = savedConv;
+				img.preparedPath = savedConv;
+				img.prepared = true;
+				filePath = savedConv;
+				dataDirty = true;
+				try {
+				  const infoNew = await this._pGetImageInfo(savedConv);
+				  if (infoNew) {
+					img.naturalWidth = Math.max(1, infoNew.width || img.naturalWidth || 1);
+					img.naturalHeight = Math.max(1, infoNew.height || img.naturalHeight || 1);
+					img.width = img.naturalWidth;
+					img.height = img.naturalHeight;
+					img.orientation = infoNew.orientation || img.orientation || 1;
+					img.preparedType = (infoNew.type || '').toLowerCase();
+				  }
+				} catch (metaErr) {
+				  console.warn(`图片${idx}转码后获取信息失败`, metaErr);
+				}
+				bmp = await loadImageFrom(node, filePath, { timeout, preferGlobal });
+				console.log(`图片${idx}转码后加载成功`);
+			  } catch (e) { 
+				throw new Error(`图片${idx}加载失败: ${e.message || e.errMsg || 'unknown'}`);
 			  }
 			}
-		  } catch (err) {
-			// 加载失败，尝试转码
-			console.warn(`加载图片${idx}失败，尝试转码`, err);
-			const convPath = await tryTranscodeIfNeeded(img.tempFilePath);
-			try { 
-			  bmp = await loadImageFrom(node, convPath, { timeout: loadTimeout });
-			  console.log(`图片${idx}转码后加载成功`);
-			} catch (e) { 
-			  throw new Error(`图片${idx}加载失败: ${e.message || e.errMsg || 'unknown'}`);
-			}
+			img._bitmap = bmp;
+			dataDirty = true;
+		  } else {
+			console.log(`图片${idx}使用缓存位图`);
 		  }
 
 		  const naturalW = Math.max(1, img.naturalWidth || img.width || bmp.width);
@@ -829,7 +1023,11 @@ onGapChanging(e) {
 		const pvH = Math.round(outH * scaleFit);
 		newCtx.drawImage(previewBmp, 0, 0, outW, outH, (size.width - pvW) / 2, (size.height - pvH) / 2, pvW, pvH);
 
-		this.setData({ stitchedTempPath: tempPath.tempFilePath, stitchProgress: 100, isStitching: false });
+		const finalSet = { stitchedTempPath: tempPath.tempFilePath, stitchProgress: 100, isStitching: false };
+		if (dataDirty) {
+			finalSet.images = images;
+		}
+		this.setData(finalSet);
 		console.log('拼图完成');
 		wx.previewImage({ current: tempPath.tempFilePath, urls: [tempPath.tempFilePath] });
 	  } catch (err) {
@@ -940,8 +1138,11 @@ onGapChanging(e) {
 	},
 
 	onDeleteSelected() {
-		const imgs = (this.data.images || []).filter(it => !it.selected);
-		const laid = this._layoutImages(imgs);
+		const all = this.data.images || [];
+		const removed = all.filter(it => it.selected);
+		const kept = all.filter(it => !it.selected);
+		this._releaseImages(removed);
+		const laid = this._layoutImages(kept);
 		this.setData({ images: laid, multiSelectMode: false, selectedCount: 0, selectedIndex: -1, stitchedTempPath: '' });
 	},
 
@@ -964,6 +1165,7 @@ onGapChanging(e) {
 	},
 
 	onClearImages() {
+		this._releaseImages(this.data.images || []);
 		const laid = this._layoutImages([]);
 		this.setData({ images: laid, stitchedTempPath: '', selectedIndex: -1, stitchProgress: 0 });
 	},

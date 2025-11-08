@@ -10,11 +10,35 @@ export function createHighResCanvas(canvas: WechatMiniprogram.Canvas, width: num
 export async function loadImageFrom(
 	node: any,
 	src: string,
-	options?: { timeout?: number; allowGlobalFallback?: boolean }
+	options?: { timeout?: number; allowGlobalFallback?: boolean; preferGlobal?: boolean }
 ): Promise<any> {
 	const opts = options || {};
 	const timeout = typeof opts.timeout === 'number' ? opts.timeout : 4000;
 	const allowGlobal = opts.allowGlobalFallback !== false;
+	const preferGlobal = !!opts.preferGlobal;
+	const hasGlobal = allowGlobal && typeof wx.createImage === 'function';
+	const hasNode = node && typeof node.createImage === 'function';
+	const creators: Array<() => any> = [];
+
+	const appendCreator = (type: 'global' | 'node') => {
+		if (type === 'global' && hasGlobal) {
+			creators.push(() => wx.createImage());
+		} else if (type === 'node' && hasNode) {
+			creators.push(() => node.createImage());
+		}
+	};
+
+	if (preferGlobal) {
+		appendCreator('global');
+		appendCreator('node');
+	} else {
+		appendCreator('node');
+		appendCreator('global');
+	}
+
+	if (!creators.length) {
+		throw new Error('no image creator available');
+	}
 
 	const tryLoad = (creator: () => any) => new Promise<any>((resolve, reject) => {
 		let img: any;
@@ -73,14 +97,18 @@ export async function loadImageFrom(
 		img.src = src;
 	});
 
-	try {
-		return await tryLoad(() => node.createImage());
-	} catch (err) {
-		if (!allowGlobal || typeof wx.createImage !== 'function') {
-			throw err;
+	const runSequential = async (index: number, lastErr: any): Promise<any> => {
+		if (index >= creators.length) {
+			throw lastErr || new Error('load failed');
 		}
-		return await tryLoad(() => wx.createImage());
-	}
+		try {
+			return await tryLoad(creators[index]);
+		} catch (err) {
+			return await runSequential(index + 1, err);
+		}
+	};
+
+	return await runSequential(0, null);
 }
 
 export function calcPreviewHeight(screenWidth: number, aspect: number) {
