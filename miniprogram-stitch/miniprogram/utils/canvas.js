@@ -24,16 +24,73 @@ function createHighResCanvas(canvas, width, height) {
 }
 
 // 从某个 canvas 节点（主画布或离屏画布）创建图片对象并加载
-function loadImageFrom(node, src) {
-    return new Promise((resolve, reject) => {
+function loadImageFrom(node, src, options) {
+    const opts = options || {};
+    const timeout = typeof opts.timeout === 'number' ? opts.timeout : 4000;
+    const allowGlobal = opts.allowGlobalFallback !== false;
+
+    const tryLoad = (creator) => new Promise((resolve, reject) => {
+        let img;
         try {
-            const img = node.createImage();
-            img.onload = () => resolve(img);
-            img.onerror = (err) => reject(err);
-            img.src = src;
-        } catch (e) {
-            reject(e);
+            img = creator();
+        } catch (err) {
+            reject(err);
+            return;
         }
+
+        let finished = false;
+        let timer = null;
+
+        if (timeout > 0) {
+            timer = setTimeout(() => {
+                if (finished) return;
+                finished = true;
+                if (img) {
+                    try {
+                        img.onload = null;
+                        img.onerror = null;
+                        img.src = '';
+                    } catch (e) {}
+                }
+                reject(new Error('load timeout'));
+            }, timeout);
+        }
+
+        img.onload = () => {
+            if (finished) return;
+            finished = true;
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+            img.onload = null;
+            img.onerror = null;
+            resolve(img);
+        };
+        img.onerror = (err) => {
+            if (finished) return;
+            finished = true;
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+            if (img) {
+                try {
+                    img.onload = null;
+                    img.onerror = null;
+                    img.src = '';
+                } catch (e) {}
+            }
+            reject(err || new Error('load error'));
+        };
+        img.src = src;
+    });
+
+    return tryLoad(() => node.createImage()).catch((err) => {
+        if (!allowGlobal || typeof wx.createImage !== 'function') {
+            throw err;
+        }
+        return tryLoad(() => wx.createImage());
     });
 }
 

@@ -26,9 +26,11 @@
     <view class="tipsInner {{tipsTransparent?'transparent':''}}">
       <text>温馨提示：</text>
       <text> 1. 长按图片拖拽可变换位置</text>
-      <text> 2. 长按底部拼接按钮可进行拼图设置</text>
-      <text> 3. 拼接完成后的预览页面，长按图片可保存拼接图</text>
-      <text> 4. 熟悉提示后，双击温馨提示区域，可隐藏/显示温馨提示</text>
+      <text> 2. 长按图片可选择要删除的图片</text>  
+      <text> 3. 长按底部拼接按钮可进行拼图设置</text>
+      <text> 4. 拼接完成后的预览页面，长按图片可保存拼接图</text>
+      <text> 5. 熟悉提示后，双击温馨提示区域，可隐藏/显示温馨提示</text>
+      <text> 6. 当图片太大超过应用/微信/小程序的尺寸阈值时，也会适当进行压缩</text>
     </view>
   </view>
 
@@ -158,17 +160,15 @@
         <text class="label">图间距</text>
         <view class="gapControls">
           <view class="stepBtn" bindtap="onGapDec">-</view>
-          <view class="gapNumber" bindtap="onGapNumberTap">{{gapTemp}}</view>
+          <view class="gapNumberWrap" bindtap="onGapNumberTap">
+            <text class="gapNumber" wx:if="{{!gapInputFocus}}">{{gapTemp}}</text>
+            <input class="gapInput2 {{gapInputFocus?'editing':''}}" type="number" value="{{gapTemp}}" focus="{{gapInputFocus}}" bindblur="onGapInputBlur" bindconfirm="onGapInputConfirm" bindfocus="onGapInputFocus"/>
+          </view>
           <view class="stepBtn" bindtap="onGapInc">+</view>
         </view>
       </view>
-      <view class="row smallHint">
-        <text class="label"></text>
+      <view class="rowNoLabel">
         <text class="hint">图间距值在0～20</text>
-      </view>
-      <view wx:if="{{showGapInput}}" class="row">
-        <text class="label">输入</text>
-        <input class="gapInput" type="number" value="{{gapTemp}}" focus="{{gapInputFocus}}" bindblur="onGapInputBlur" bindconfirm="onGapInputConfirm"/>
       </view>
       <view class="modalBtns">
         <button class="btn" bindtap="onCancelGap">取消</button>
@@ -183,7 +183,7 @@
     <view class="modalBody">
       <image class="modalImg" src="{{modalImage}}" mode="aspectFit"/>
       <view class="modalBtns">
-        <button class="btn" bindtap="onCancelDelete">不删除</button>
+        <button class="btn" bindtap="onCancelDelete">取消删除</button>
         <button class="btn primary" bindtap="onConfirmDelete">确认删除</button>
       </view>
     </view>

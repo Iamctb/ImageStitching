@@ -7,17 +7,80 @@ export function createHighResCanvas(canvas: WechatMiniprogram.Canvas, width: num
 	return { ctx, dpr };
 }
 
-export async function loadImageFrom(node: any, src: string): Promise<any> {
-	return await new Promise((resolve, reject) => {
+export async function loadImageFrom(
+	node: any,
+	src: string,
+	options?: { timeout?: number; allowGlobalFallback?: boolean }
+): Promise<any> {
+	const opts = options || {};
+	const timeout = typeof opts.timeout === 'number' ? opts.timeout : 4000;
+	const allowGlobal = opts.allowGlobalFallback !== false;
+
+	const tryLoad = (creator: () => any) => new Promise<any>((resolve, reject) => {
+		let img: any;
 		try {
-			const img = node.createImage();
-			img.onload = () => resolve(img);
-			img.onerror = (err: any) => reject(err);
-			img.src = src;
-		} catch (e) {
-			reject(e);
+			img = creator();
+		} catch (err) {
+			reject(err);
+			return;
 		}
+
+		let finished = false;
+		let timer: any = null;
+
+		if (timeout > 0) {
+			timer = setTimeout(() => {
+				if (finished) return;
+				finished = true;
+				if (img) {
+					try {
+						img.onload = null;
+						img.onerror = null;
+						img.src = '';
+					} catch (e) {}
+				}
+				reject(new Error('load timeout'));
+			}, timeout);
+		}
+
+		img.onload = () => {
+			if (finished) return;
+			finished = true;
+			if (timer) {
+				clearTimeout(timer);
+				timer = null;
+			}
+			img.onload = null;
+			img.onerror = null;
+			resolve(img);
+		};
+		img.onerror = (err: any) => {
+			if (finished) return;
+			finished = true;
+			if (timer) {
+				clearTimeout(timer);
+				timer = null;
+			}
+			if (img) {
+				try {
+					img.onload = null;
+					img.onerror = null;
+					img.src = '';
+				} catch (e) {}
+			}
+			reject(err || new Error('load error'));
+		};
+		img.src = src;
 	});
+
+	try {
+		return await tryLoad(() => node.createImage());
+	} catch (err) {
+		if (!allowGlobal || typeof wx.createImage !== 'function') {
+			throw err;
+		}
+		return await tryLoad(() => wx.createImage());
+	}
 }
 
 export function calcPreviewHeight(screenWidth: number, aspect: number) {

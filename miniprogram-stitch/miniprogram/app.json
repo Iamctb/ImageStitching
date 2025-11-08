@@ -3,7 +3,7 @@
     "pages/index/index"
   ],
   "window": {
-    "navigationBarTitleText": "无损拼图",
+    "navigationBarTitleText": "优雅拼图",
     "navigationBarBackgroundColor": "#ffffff",
     "navigationBarTextStyle": "black",
     "backgroundTextStyle": "light"

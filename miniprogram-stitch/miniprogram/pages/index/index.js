@@ -127,9 +127,44 @@ Page({
 			columns,
 			thumbsHeight: thumbWpx + thumbGapPx,
 		});
-		// 初始化布局，确保显示“上传图片”卡片
+		// 初始化布局，确保显示"上传图片"卡片
 		const laid = this._layoutImages(this.data.images || []);
 		this.setData({ images: laid });
+		
+		// 检测设备GPU纹理上限（异步，用于后续拼图优化）
+		this._detectDeviceLimit();
+	},
+	
+	_detectDeviceLimit() {
+		// 尝试通过创建临时canvas检测设备真实上限
+		const query = wx.createSelectorQuery();
+		query.select('#preview').fields({ node: true }).exec((res) => {
+			if (!res || !res[0]) return;
+			const node = res[0].node;
+			try {
+				const ctx = node.getContext('2d');
+				// 尝试读取WebGL上限（部分设备支持）
+				const glCanvas = node.getContext('webgl') || node.getContext('experimental-webgl');
+				if (glCanvas) {
+					const maxSize = glCanvas.getParameter(glCanvas.MAX_TEXTURE_SIZE);
+					if (maxSize && maxSize > 0) {
+						this.deviceMaxCanvasSize = Math.min(16384, maxSize);
+						console.log('检测到设备GPU上限', this.deviceMaxCanvasSize);
+						return;
+					}
+				}
+			} catch(e) {}
+			// 回退：根据系统平台设置保守值
+			const sys = wx.getSystemInfoSync();
+			if (sys.platform === 'android') {
+				this.deviceMaxCanvasSize = 4096; // 安卓保守
+			} else if (sys.platform === 'ios') {
+				this.deviceMaxCanvasSize = 8192; // iOS较高
+			} else {
+				this.deviceMaxCanvasSize = 4096;
+			}
+			console.log('使用平台默认上限', sys.platform, this.deviceMaxCanvasSize);
+		});
 	},
 
 	// 计算并布局缩略图坐标
@@ -236,13 +271,16 @@ Page({
 		this.setData({ gapTemp: v });
 	},
 	onGapNumberTap() {
-		this.setData({ showGapInput: true, gapInputFocus: true });
+		this.setData({ gapInputFocus: true });
+	},
+	onGapInputFocus() {
+		// 聚焦时不做处理，保持焦点
 	},
 	onGapInputBlur(e) {
 		let v = Number(e.detail.value);
 		if (Number.isNaN(v)) v = this.data.gapTemp || 0;
 		v = Math.min(20, Math.max(0, Math.round(v)));
-		this.setData({ gapTemp: v, showGapInput: false, gapInputFocus: false });
+		this.setData({ gapTemp: v, gapInputFocus: false });
 	},
 	onGapInputConfirm(e) {
 		this.onGapInputBlur(e);
@@ -258,19 +296,19 @@ Page({
 		let lines = [];
 		if (direction === 'vertical') {
 			if (mode === 'min') {
-				lines = ['✓ 清晰度：最佳（不放大）', '✓ 文件大小：较小', '✓ 速度：最快', '✓ 适用：追求清晰'];
+				lines = ['✓ 清晰度：最佳（不放大）', '✓ 文件大小：较小', '✓ 特点: 缩小大图，适用于多图轻量化保存'];
 			} else if (mode === 'max') {
-				lines = ['✓ 对齐：整齐统一', '⚠ 清晰度：可能略降（放大）', '⚠ 文件大小：较大', '✓ 适用：追求美观'];
+				lines = ['✓ 清晰度：可能略降（放大）', '⚠ 文件大小：较大', '✓ 特点: 扩大小图, 适用于打印或高清保存'];
 			} else {
-				lines = ['✓ 清晰度：完美（原图）', '✓ 对齐：居中留白', '⚠ 文件大小：最大', '✓ 适用：专业用途'];
+				lines = ['✓ 清晰度：原画保真（原图）',  '⚠ 文件大小：较大', '✓ 特点: 不对图片放缩，适用于保存原图'];
 			}
 		} else {
 			if (mode === 'min') {
-				lines = ['✓ 清晰度：最佳（不放大）', '✓ 文件大小：较小', '✓ 速度：最快', '✓ 适用：追求清晰'];
+				lines = ['✓ 清晰度：最佳（不放大）', '✓ 文件大小：较小', '✓ 特点: 缩小大图，适用于多图轻量化保存'];
 			} else if (mode === 'max') {
-				lines = ['✓ 对齐：整齐统一', '⚠ 清晰度：可能略降（放大）', '⚠ 文件大小：较大', '✓ 适用：追求美观'];
+				lines = ['✓ 清晰度：可能略降（放大）', '⚠ 文件大小：较大', '✓ 特点: 扩大小图, 适用于打印或高清保存'];
 			} else {
-				lines = ['✓ 清晰度：完美（原图）', '✓ 对齐：居中留白', '⚠ 文件大小：最大', '✓ 适用：专业用途'];
+				lines = ['✓ 清晰度：原画保真（原图）',  '⚠ 文件大小：较大', '✓ 特点: 不对图片放缩，适用于保存原图'];
 			}
 		}
 		this.setData({ modeDescLines: lines });
@@ -482,7 +520,7 @@ onGapChanging(e) {
 		this.setData({ gap: e.detail.value || 0, stitchedTempPath: '', stitchProgress: 0 });
 },
 
-onStitch: async function() {
+	onStitch: async function() {
 	const { images, direction, gap } = this.data;
 	if (!images || !images.length) return;
   
@@ -492,20 +530,23 @@ onStitch: async function() {
 	const query = wx.createSelectorQuery();
 	query.select('#preview').fields({ node: true, size: true }).exec(async (res) => {
 	  const node = res[0].node;
-	  const size = res[0]; // size.width size.height
-	  // 尝试读取设备像素比，保证高分辨率输出
+	  const size = res[0];
 	  const sys = wx.getSystemInfoSync();
 	  const dpr = Math.max(1, sys.pixelRatio || 1);
   
-	  // createHighResCanvas 可能已经做了 dpr 处理；若没有，后面会对 off canvas 强制处理
+	  // 强制重新初始化主画布（清除之前可能的状态残留）
 	  const { ctx } = createHighResCanvas(node, size.width, size.height);
+	  
+	  // 用于追踪需要释放的资源
+	  let off = null;
+	  let usedMain = false;
   
 	  try {
-		// 1) 统一通过 wx.getImageInfo（或 loadImageFrom 获取的天然尺寸）来获取原始像素宽高
+		// 1) 验证并刷新图片路径，获取原始像素宽高
 		let doneProbe = 0;
 		for (const it of images) {
 		  try {
-			// 优先使用 wx.getImageInfo（更可靠拿到 naturalWidth/naturalHeight）
+			// 优先使用 wx.getImageInfo 验证路径有效性并获取尺寸
 			const info = await new Promise((resolve, reject) => {
 			  wx.getImageInfo({
 				src: it.tempFilePath,
@@ -513,15 +554,31 @@ onStitch: async function() {
 				fail: (e) => reject(e)
 			  });
 			});
-			// wx.getImageInfo 返回的宽高就是图片原始像素
+			// 更新为 getImageInfo 返回的有效路径（可能与原路径不同）
+			it.tempFilePath = info.path || it.tempFilePath;
 			it.naturalWidth = info.width;
 			it.naturalHeight = info.height;
-			// 兼容原字段
 			it.width = it.width || info.width;
 			it.height = it.height || info.height;
+			console.log(`图片${doneProbe}信息`, { path: it.tempFilePath, w: info.width, h: info.height });
 		  } catch (pe) {
-			// fallback：如果 getImageInfo 失败，尽量保留已有值或稍后从 node/loadImageFrom 再取
-			// 不要阻塞流程
+			// 路径失效，尝试转码生成新路径
+			console.warn(`图片${doneProbe}路径失效，尝试转码`, pe);
+			try {
+			  const convPath = await tryTranscodeIfNeeded(it.tempFilePath);
+			  const info2 = await new Promise((resolve, reject) => {
+				wx.getImageInfo({ src: convPath, success: resolve, fail: reject });
+			  });
+			  it.tempFilePath = convPath;
+			  it.naturalWidth = info2.width;
+			  it.naturalHeight = info2.height;
+			  it.width = info2.width;
+			  it.height = info2.height;
+			  console.log(`图片${doneProbe}转码后`, { path: convPath, w: info2.width, h: info2.height });
+			} catch (e2) {
+			  console.error(`图片${doneProbe}无法获取信息`, e2);
+			  // 保留已有值，后续尝试加载
+			}
 		  }
 		  doneProbe++;
 		  const p = Math.min(25, Math.round(1 + (doneProbe / images.length) * 24));
@@ -600,9 +657,11 @@ onStitch: async function() {
 		if (!outW || !outH) throw new Error('输出尺寸计算失败');
 		console.log('计算后尺寸', { outW, outH, mode });
 		
-		// 限制画布最大尺寸（微信/设备上限通常为 16384），并限制总像素避免内存溢出
-		const MAX_CANVAS_SIDE = 16384;
-		const MAX_TOTAL_PIXELS = 4096 * 4096; // 约16M像素，确保稳定性（真机内存有限）
+		// 限制画布最大尺寸（动态检测设备上限，安卓/iOS区分）
+		const sys = wx.getSystemInfoSync();
+		const MAX_CANVAS_SIDE = this.deviceMaxCanvasSize || (sys.platform === 'android' ? 4096 : 8192);
+		// 总像素限制：安卓更严格
+		const MAX_TOTAL_PIXELS = sys.platform === 'android' ? (4096 * 4096) : (8192 * 4096);
 		let scaleDown = 1;
 		
 		// 检查边长限制
@@ -610,7 +669,7 @@ onStitch: async function() {
 			scaleDown = Math.min(MAX_CANVAS_SIDE / outW, MAX_CANVAS_SIDE / outH);
 		}
 		
-		// 检查总像素限制（更严格）
+		// 检查总像素限制
 		const totalPixels = outW * outH;
 		if (totalPixels > MAX_TOTAL_PIXELS) {
 			const pixelScale = Math.sqrt(MAX_TOTAL_PIXELS / totalPixels);
@@ -620,22 +679,38 @@ onStitch: async function() {
 		if (scaleDown < 1) {
 			outW = Math.max(1, Math.floor(outW * scaleDown));
 			outH = Math.max(1, Math.floor(outH * scaleDown));
-			console.log('画布超限，缩放比例', scaleDown.toFixed(3), '最终尺寸', outW, 'x', outH, '=', (outW*outH/1000000).toFixed(1), 'M像素');
-			if (outW * outH > MAX_TOTAL_PIXELS) {
-				// 二次检查，强制限制
-				const finalScale = Math.sqrt(MAX_TOTAL_PIXELS / (outW * outH));
-				outW = Math.max(1, Math.floor(outW * finalScale));
-				outH = Math.max(1, Math.floor(outH * finalScale));
-				console.log('二次限制后', outW, 'x', outH, '=', (outW*outH/1000000).toFixed(1), 'M像素');
-			}
+			console.log('画布超限，平台', sys.platform, '上限', MAX_CANVAS_SIDE, '缩放比例', scaleDown.toFixed(3), '最终尺寸', outW, 'x', outH, '=', (outW*outH/1000000).toFixed(1), 'M像素');
 		} else {
 			console.log('画布未超限，使用原始尺寸', outW, 'x', outH, '=', (outW*outH/1000000).toFixed(1), 'M像素');
 		}
 		this.setData({ stitchProgress: 30 });
   
-		// 3) 创建离屏画布（直接用逻辑像素，不再乘 dpr）
-		const off = safeCreateOffscreenCanvas(node, outW, outH);
-		const octx = off.getContext('2d');
+		// 3) 创建离屏画布（直接用逻辑像素，安卓可能需要回退主画布）
+		let octx;
+		try {
+			off = safeCreateOffscreenCanvas(node, outW, outH);
+			octx = off.getContext('2d');
+			console.log('离屏画布创建成功', outW, outH);
+		} catch (eOff) {
+			console.warn('离屏画布创建失败，回退主画布', eOff);
+			usedMain = true;
+			off = null;
+			// 临时设置主画布为输出尺寸
+			node.width = outW;
+			node.height = outH;
+			octx = node.getContext('2d');
+			// 重置变换矩阵为单位矩阵，避免之前的scale残留
+			if (octx.setTransform) {
+				octx.setTransform(1, 0, 0, 1, 0, 0);
+			} else if (octx.resetTransform) {
+				octx.resetTransform();
+			}
+			console.log('使用主画布', outW, outH);
+		}
+		
+		if (!octx) {
+			throw new Error('无法获取绘图上下文');
+		}
 		
 		// 启用高质量图像平滑，提升缩放清晰度
 		if (octx.imageSmoothingEnabled !== undefined) {
@@ -651,18 +726,46 @@ onStitch: async function() {
 		// 4) 绘制每张图片，根据拼接方式计算位置与尺寸
 		const scaledGap = Math.round(gapPx * scaleDown);
 		let cursorX = 0, cursorY = 0;
+		
+		// 安卓离屏画布加载临时文件慢/不稳定，统一用主画布加载（快速且稳定）
+		const isAndroid = sys.platform === 'android';
+		const loadTimeout = isAndroid ? 2000 : 4000;
+		
 		for (let idx = 0; idx < images.length; idx++) {
 		  const img = images[idx];
 		  let bmp;
+		  console.log(`开始加载图片${idx}`, img.tempFilePath);
+		  
 		  try {
-			bmp = await loadImageFrom(off, img.tempFilePath);
+			// 安卓统一用主画布加载（避免离屏画布加载临时文件超时）
+			if (isAndroid) {
+			  bmp = await loadImageFrom(node, img.tempFilePath, { timeout: loadTimeout });
+			  console.log(`图片${idx}主画布加载成功`);
+			} else {
+			  // iOS优先尝试离屏画布
+			  try {
+				bmp = await loadImageFrom(usedMain ? node : off, img.tempFilePath, { timeout: loadTimeout });
+				console.log(`图片${idx}加载成功`);
+			  } catch (err) {
+				console.warn(`图片${idx}离屏加载失败，用主画布`, err);
+				bmp = await loadImageFrom(node, img.tempFilePath, { timeout: loadTimeout });
+			  }
+			}
 		  } catch (err) {
+			// 加载失败，尝试转码
+			console.warn(`加载图片${idx}失败，尝试转码`, err);
 			const convPath = await tryTranscodeIfNeeded(img.tempFilePath);
-			try { bmp = await loadImageFrom(off, convPath); } catch (e) { bmp = await loadImageFrom(node, convPath); }
+			try { 
+			  bmp = await loadImageFrom(node, convPath, { timeout: loadTimeout });
+			  console.log(`图片${idx}转码后加载成功`);
+			} catch (e) { 
+			  throw new Error(`图片${idx}加载失败: ${e.message || e.errMsg || 'unknown'}`);
+			}
 		  }
 
 		  const naturalW = Math.max(1, img.naturalWidth || img.width || bmp.width);
 		  const naturalH = Math.max(1, img.naturalHeight || img.height || bmp.height);
+		  console.log(`开始绘制图片${idx}`, { naturalW, naturalH, cursorX, cursorY });
 		  
 		  if (direction === 'vertical') {
 			if (mode === 'original') {
@@ -699,24 +802,49 @@ onStitch: async function() {
 		}
   
 		// 5) 导出
-		const tempPath = await safeCanvasToTempFilePath(off, 'png', outW, outH);
+		console.log('开始导出', usedMain ? '主画布' : '离屏画布');
+		const tempPath = await safeCanvasToTempFilePath(usedMain ? node : off, 'png', outW, outH);
+		console.log('导出成功', tempPath.tempFilePath);
 		this.setData({ stitchProgress: 96 });
 
-		// 6) 预览绘制
+		// 6) 清理资源：释放离屏画布（如果有）
+		if (off && !usedMain) {
+			try {
+				// 尝试清理离屏画布（某些环境支持显式释放）
+				if (off.width) off.width = 0;
+				if (off.height) off.height = 0;
+			} catch(e) {}
+			off = null;
+		}
+
+		// 7) 恢复主画布预览尺寸
+		createHighResCanvas(node, size.width, size.height);
+		const { ctx: newCtx } = createHighResCanvas(node, size.width, size.height);
+
+		// 8) 预览绘制
 		const previewBmp = await loadImageFrom(node, tempPath.tempFilePath);
-		ctx.clearRect(0, 0, size.width, size.height);
+		newCtx.clearRect(0, 0, size.width, size.height);
 		const scaleFit = Math.min(size.width / outW, size.height / outH);
 		const pvW = Math.round(outW * scaleFit);
 		const pvH = Math.round(outH * scaleFit);
-		ctx.drawImage(previewBmp, 0, 0, outW, outH, (size.width - pvW) / 2, (size.height - pvH) / 2, pvW, pvH);
+		newCtx.drawImage(previewBmp, 0, 0, outW, outH, (size.width - pvW) / 2, (size.height - pvH) / 2, pvW, pvH);
 
 		this.setData({ stitchedTempPath: tempPath.tempFilePath, stitchProgress: 100, isStitching: false });
+		console.log('拼图完成');
 		wx.previewImage({ current: tempPath.tempFilePath, urls: [tempPath.tempFilePath] });
 	  } catch (err) {
 		console.error('拼图失败', err);
 		const msg = err && (err.errMsg || err.message) ? ('拼图失败：' + (err.errMsg || err.message)) : '拼图失败';
 		wx.showToast({ title: msg, icon: 'none' });
 		this.setData({ isStitching: false, stitchProgress: 0 });
+		// 确保主画布恢复
+		try { createHighResCanvas(node, size.width, size.height); } catch(e) {}
+	  } finally {
+		// 最终清理
+		if (off && !usedMain) {
+			try { if (off.width) { off.width = 0; off.height = 0; } } catch(e) {}
+			off = null;
+		}
 	  }
 	});
   },
