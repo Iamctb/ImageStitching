@@ -50,6 +50,17 @@
     </view>
   </view>
 
+  <!-- 大图加载：超过阈值时展示进度，避免“无响应”体验 -->
+  <view wx:if="{{isPreparing}}" class="busyMask" catchtouchmove="true" catchtap="noop">
+    <view class="busyBox">
+      <view class="progressBar">
+        <view class="progressInner" style="width: {{prepareProgress}}%;"></view>
+      </view>
+      <text class="progressText">{{prepareProgress}}%</text>
+      <text class="progressNote">{{prepareNote}}（约 {{prepareTotalMB}}MB）</text>
+    </view>
+  </view>
+
   
 
   <!-- 固定底栏：竖向/横向拼接（支持长按设置间距） -->

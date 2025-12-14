@@ -168,16 +168,76 @@ export function drawWithOrientation(ctx: any, img: any, sx: number, sy: number, 
 	ctx.restore();
 }
 
-export async function safeCanvasToTempFilePath(canvas: any, prefer: 'png' | 'jpg' = 'png') {
+export async function safeCanvasToTempFilePath(
+	canvas: any,
+	prefer: 'png' | 'jpg' = 'png',
+	width?: number,
+	height?: number,
+	destWidth?: number,
+	destHeight?: number
+) {
+	const w = Math.max(1, Math.floor(width || canvas.width || 0));
+	const h = Math.max(1, Math.floor(height || canvas.height || 0));
+	const dw = Math.max(1, Math.floor(destWidth || w));
+	const dh = Math.max(1, Math.floor(destHeight || h));
 	try {
-		return await wx.canvasToTempFilePath({ canvas, fileType: prefer, quality: 1 });
+		return await wx.canvasToTempFilePath({
+			canvas,
+			x: 0,
+			y: 0,
+			width: w,
+			height: h,
+			destWidth: dw,
+			destHeight: dh,
+			fileType: prefer,
+			quality: 1,
+		});
 	} catch (e) {
 		try {
 			// @ts-ignore
-			return await new Promise<any>((resolve, reject) => canvas.toTempFilePath({ fileType: prefer, quality: 1, success: resolve, fail: reject }));
+			return await new Promise<any>((resolve, reject) =>
+				canvas.toTempFilePath({
+					x: 0,
+					y: 0,
+					width: w,
+					height: h,
+					destWidth: dw,
+					destHeight: dh,
+					fileType: prefer,
+					quality: 1,
+					success: resolve,
+					fail: reject,
+				})
+			);
 		} catch (err) {
 			throw err;
 		}
+	}
+}
+
+function inferExtLower(path: string) {
+	try {
+		const pure = String(path || '').split('?')[0];
+		const m = pure.match(/\.([a-zA-Z0-9]+)$/);
+		return m ? String(m[1]).toLowerCase() : '';
+	} catch (e) {
+		return '';
+	}
+}
+
+// 兜底：仅在必要时转码（避免对 jpg/png 等已兼容图片重复压缩导致清晰度下降）
+export async function tryTranscodeIfNeeded(path: string) {
+	const ext = inferExtLower(path);
+	const looksHeic = ext === 'heic' || ext === 'heif';
+	const looksSupported =
+		ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'webp' || ext === 'bmp' || ext === 'gif';
+	if (looksSupported && !looksHeic) return path;
+	try {
+		// @ts-ignore
+		const res = await wx.compressImage({ src: path, quality: 100 });
+		return res.tempFilePath || path;
+	} catch (e) {
+		return path;
 	}
 }
 

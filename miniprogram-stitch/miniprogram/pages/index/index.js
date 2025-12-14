@@ -3,6 +3,10 @@ const { createHighResCanvas, loadImageFrom, calcPreviewHeight, drawWithOrientati
 
 const SUPPORTED_IMAGE_TYPES = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'];
 const SAVED_PATH_REG = /^wxfile:\/\/(usr|store)/i;
+const IOS_BITMAP_BUDGET = 64 * 1000 * 1000; // 约 64MP
+const ANDROID_BITMAP_BUDGET = 42 * 1000 * 1000; // 约 42MP
+const DEFAULT_BITMAP_CACHE_LIMIT = 6;
+const ANDROID_BITMAP_CACHE_LIMIT = 4;
 
 Page({
 	data: {
@@ -45,6 +49,12 @@ Page({
 		multiSelectMode: false,
 		selectedCount: 0,
 		_lastBlankTap: 0,
+
+		// 大图加载进度（总大小较大时展示）
+		isPreparing: false,
+		prepareProgress: 0,
+		prepareNote: '',
+		prepareTotalMB: 0,
 	},
 
 	// 空操作：用于遮罩拦截点击 
@@ -114,19 +124,21 @@ Page({
 	},
 
 	// 可选最大图片数（可按需调整）
-	MAX_IMAGES: 12,
+	MAX_IMAGES: 9,
 
 	onLoad() {
 		if (!this._cacheRefs) {
 			this._cacheRefs = Object.create(null);
 		}
 		const info = wx.getSystemInfoSync();
+		this._initBitmapCacheBudget(info);
 		const pxPerRpx = info.windowWidth / 750;
-		const thumbWpx = Math.round(pxPerRpx * 160);
 		const thumbGapPx = Math.round(pxPerRpx * 12);
-		// 预留左右内边距约 32rpx
+		// 固定一排展示 3 张缩略图（用户要求由 4 改为 3）
+		const columns = 3;
+		// 预留左右内边距约 32rpx，让 3 列刚好铺满
 		const innerWidth = info.windowWidth - Math.round(pxPerRpx * 32);
-		const columns = Math.max(1, Math.floor(innerWidth / (thumbWpx + thumbGapPx)));
+		const thumbWpx = Math.max(48, Math.floor((innerWidth - (columns - 1) * thumbGapPx) / columns));
 		this.setData({
 			canvasPreviewHeight: calcPreviewHeight(info.windowWidth, 3/4),
 			thumbWpx,
@@ -249,6 +261,7 @@ Page({
 	onUnload() {
 		this._releaseImages(this.data.images || []);
 		this._releaseAllCacheFiles();
+		this._clearBitmapCache();
 	},
 
 	// 计算并布局缩略图坐标
@@ -304,15 +317,10 @@ Page({
 	_releaseImage(info) {
 		if (!info) return;
 		const path = info.preparedPath || info.tempFilePath;
-		if (!path) return;
-		if (info._bitmap) {
-			try {
-				if (info._bitmap.onload) info._bitmap.onload = null;
-				if (info._bitmap.onerror) info._bitmap.onerror = null;
-			} catch(e) {}
-			info._bitmap = null;
+		if (path) {
+			this._releaseBitmapByPath(path);
 		}
-		if (info._cacheRegistered || SAVED_PATH_REG.test(path)) {
+		if (path && (info._cacheRegistered || SAVED_PATH_REG.test(path))) {
 			this._releaseCacheFile(path);
 			info._cacheRegistered = false;
 		}
@@ -332,6 +340,101 @@ Page({
 			}
 		});
 		this._cacheRefs = Object.create(null);
+	},
+
+	_initBitmapCacheBudget(sysInfo) {
+		if (this._bitmapBudgetReady) return;
+		let info = sysInfo;
+		if (!info) {
+			try { info = wx.getSystemInfoSync(); } catch(e) { info = { platform: '' }; }
+		}
+		const isIOS = info && info.platform === 'ios';
+		this._bitmapPixelBudget = isIOS ? IOS_BITMAP_BUDGET : ANDROID_BITMAP_BUDGET;
+		this._bitmapCacheLimit = isIOS ? DEFAULT_BITMAP_CACHE_LIMIT : ANDROID_BITMAP_CACHE_LIMIT;
+		if (typeof Map === 'function' && !this._bitmapCache) {
+			this._bitmapCache = new Map();
+		}
+		this._bitmapPixelTotal = 0;
+		this._bitmapBudgetReady = true;
+	},
+
+	_getBitmapFromCache(path) {
+		if (!path || !this._bitmapCache || typeof this._bitmapCache.get !== 'function') return null;
+		const entry = this._bitmapCache.get(path);
+		if (entry && entry.bmp) {
+			entry.usedAt = Date.now();
+			return entry.bmp;
+		}
+		return null;
+	},
+
+	_storeBitmapInCache(path, bmp) {
+		if (!path || !bmp) return;
+		if (typeof Map !== 'function') return;
+		if (!this._bitmapCache) {
+			this._bitmapCache = new Map();
+		}
+		this._removeBitmapEntry(path);
+		const pixels = Math.max(1, (bmp.width || 0)) * Math.max(1, (bmp.height || 0));
+		this._bitmapCache.set(path, {
+			bmp,
+			pixels,
+			usedAt: Date.now(),
+		});
+		this._bitmapPixelTotal = (this._bitmapPixelTotal || 0) + pixels;
+		this._trimBitmapCache();
+	},
+
+	_removeBitmapEntry(path) {
+		if (!path || !this._bitmapCache || typeof this._bitmapCache.get !== 'function') return;
+		const entry = this._bitmapCache.get(path);
+		if (!entry) return;
+		const bmp = entry.bmp;
+		if (bmp) {
+			try { bmp.onload = null; bmp.onerror = null; } catch(e) {}
+			try { bmp.src = ''; } catch(e2) {}
+			if (typeof bmp.close === 'function') {
+				try { bmp.close(); } catch(e3) {}
+			}
+		}
+		if (entry.pixels) {
+			this._bitmapPixelTotal = Math.max(0, (this._bitmapPixelTotal || 0) - entry.pixels);
+		}
+		this._bitmapCache.delete(path);
+	},
+
+	_trimBitmapCache(force = false) {
+		if (!this._bitmapCache || typeof this._bitmapCache.entries !== 'function') return;
+		const limit = this._bitmapCacheLimit || DEFAULT_BITMAP_CACHE_LIMIT;
+		const budget = this._bitmapPixelBudget || IOS_BITMAP_BUDGET;
+		if (!force && this._bitmapCache.size <= limit && (this._bitmapPixelTotal || 0) <= budget) return;
+		const list = Array.from(this._bitmapCache.entries());
+		list.sort((a, b) => {
+			const usedA = (a[1] && a[1].usedAt) || 0;
+			const usedB = (b[1] && b[1].usedAt) || 0;
+			if (usedA !== usedB) return usedA - usedB;
+			const pxA = (a[1] && a[1].pixels) || 0;
+			const pxB = (b[1] && b[1].pixels) || 0;
+			return pxA - pxB;
+		});
+		for (const [key] of list) {
+			if (!force && this._bitmapCache.size <= limit && (this._bitmapPixelTotal || 0) <= budget) break;
+			this._removeBitmapEntry(key);
+		}
+	},
+
+	_releaseBitmapByPath(path) {
+		if (!path) return;
+		this._removeBitmapEntry(path);
+	},
+
+	_clearBitmapCache() {
+		if (!this._bitmapCache) return;
+		this._trimBitmapCache(true);
+		if (typeof this._bitmapCache.clear === 'function') {
+			this._bitmapCache.clear();
+		}
+		this._bitmapPixelTotal = 0;
 	},
 
 	async _ensureSavedFile(path) {
@@ -383,6 +486,13 @@ Page({
 				type = info && info.type ? String(info.type).toLowerCase() : type;
 			}
 		}
+		// 记录文件大小（用于大图策略判断/进度展示）
+		let fileSize = 0;
+		try {
+			const fi = await this._pGetFileInfo(path);
+			fileSize = fi && fi.size ? fi.size : 0;
+		} catch (e) {}
+
 		const savedPath = await this._ensureSavedFile(path);
 		const prepared = {
 			...cloned,
@@ -395,13 +505,14 @@ Page({
 			width: Math.max(1, info && info.width ? info.width : (cloned.width || 1)),
 			height: Math.max(1, info && info.height ? info.height : (cloned.height || 1)),
 			orientation: info && info.orientation ? info.orientation : (cloned.orientation || 1),
+			fileSize,
 			prepared: true,
 			_cacheRegistered: true,
 		};
 		return prepared;
 	},
 
-	async _prepareImages(list) {
+	async _prepareImages(list, progressCb) {
 		if (!Array.isArray(list) || !list.length) return [];
 		const prepared = [];
 		const newlyPrepared = [];
@@ -410,11 +521,16 @@ Page({
 				const item = list[i];
 				if (item && item.prepared && item.preparedPath && item.naturalWidth && item.naturalHeight) {
 					prepared.push(item);
+					if (typeof progressCb === 'function') progressCb(i + 1, list.length, item);
+					// 让出一帧，避免大图连续处理导致卡顿/闪退
+					await this._sleep(0);
 					continue;
 				}
 				const ready = await this._prepareSingleImage(item, i);
 				prepared.push(ready);
 				newlyPrepared.push(ready);
+				if (typeof progressCb === 'function') progressCb(i + 1, list.length, ready);
+				await this._sleep(0);
 			}
 			return prepared;
 		} catch (err) {
@@ -627,6 +743,26 @@ Page({
 		}));
 	},
 
+	_pGetFileInfo(filePath) {
+		return new Promise((resolve) => {
+			try {
+				const fsm = wx.getFileSystemManager && wx.getFileSystemManager();
+				if (!fsm || !fsm.getFileInfo) { resolve(null); return; }
+				fsm.getFileInfo({
+					filePath,
+					success: resolve,
+					fail: () => resolve(null),
+				});
+			} catch (e) {
+				resolve(null);
+			}
+		});
+	},
+
+	_sleep(ms) {
+		return new Promise((r) => setTimeout(r, ms));
+	},
+
 	// 统一封装：chooseMedia（备用方案）
 	_pChooseMedia(opts) {
 		return new Promise((resolve, reject) => wx.chooseMedia({
@@ -667,7 +803,8 @@ Page({
 			// 2) 常规环境使用 chooseImage
 			if (!files.length && !cancelled) {
 				try {
-					const r = await this._pChooseImage({ count: remain, sizeType: ['original','compressed'], sourceType: ['album','camera'] });
+					// 为了拼图清晰度：优先只拿原图，避免“选图阶段”就被压缩导致整体变糊
+					const r = await this._pChooseImage({ count: remain, sizeType: ['original'], sourceType: ['album','camera'] });
 					if (r.tempFiles && r.tempFiles.length) {
 						files = r.tempFiles.map(f => ({ tempFilePath: f.tempFilePath || f.path }));
 					} else {
@@ -678,7 +815,8 @@ Page({
 			// 3) 兜底使用 chooseMedia
 			if (!files.length && !cancelled) {
 				try {
-					const r = await this._pChooseMedia({ count: remain, mediaType: ['image'], sizeType: ['original','compressed'], sourceType: ['album','camera'] });
+					// 同上：只拿原图
+					const r = await this._pChooseMedia({ count: remain, mediaType: ['image'], sizeType: ['original'], sourceType: ['album','camera'] });
 					files = (r.tempFiles || []).map(f => ({ tempFilePath: f.tempFilePath, width: f.width, height: f.height }));
 				} catch (e3) { if ((e3 && e3.errMsg || '').includes('cancel')) { cancelled = true; } console.warn('chooseMedia失败', e3); }
 			}
@@ -726,12 +864,38 @@ Page({
             }
             if (dedup.length >= this.MAX_IMAGES) break;
         }
-		wx.showLoading({ title: '正在优化图片', mask: true });
+		// 体验优化：用户选择完图片后立刻显示进度遮罩（不再等待统计完成）
+		this.setData({
+			isPreparing: true,
+			prepareProgress: 1,
+			prepareNote: '正在准备图片…',
+			prepareTotalMB: 0,
+		});
+
+		// 统计图片总大小：仅用于展示与策略判断，不阻塞遮罩出现
+		let totalBytes = 0;
+		for (const it of dedup) {
+			const p = it && it.tempFilePath;
+			if (!p) continue;
+			if (it.fileSize) { totalBytes += it.fileSize; continue; }
+			try {
+				const fi = await this._pGetFileInfo(p);
+				if (fi && fi.size) totalBytes += fi.size;
+			} catch (e) {}
+		}
+		const totalMB = Math.round((totalBytes / (1024 * 1024)) * 10) / 10;
+		this.setData({ prepareTotalMB: totalMB });
 		let preparedList;
 		try {
-			preparedList = await this._prepareImages(dedup);
+			preparedList = await this._prepareImages(dedup, (done, total) => {
+				const pct = Math.min(99, Math.max(1, Math.round((done / total) * 100)));
+				this.setData({
+					prepareProgress: pct,
+					prepareNote: `正在加载图片 ${done}/${total}`,
+				});
+			});
 		} finally {
-			wx.hideLoading();
+			this.setData({ isPreparing: false, prepareProgress: 0, prepareNote: '', prepareTotalMB: 0 });
 		}
 		const laid = this._layoutImages(preparedList);
 		this.setData({ images: laid, stitchedTempPath: '', stitchProgress: 0 });
@@ -776,6 +940,13 @@ onGapChanging(e) {
 	  let off = null;
 	  let usedMain = false;
 	  let dataDirty = false;
+	  // 大任务可靠性优先：禁用位图缓存、禁用超采样、逐张强制 flush 后再释放，避免“黑白渐变块”
+	  const totalBytes = (images || []).reduce((s, it) => s + (it && it.fileSize ? it.fileSize : 0), 0);
+	  const bigTask = (images && images.length >= 8) || totalBytes >= 30 * 1024 * 1024;
+	  const noCacheInThisStitch = !!bigTask;
+	  if (noCacheInThisStitch) {
+		try { this._clearBitmapCache(); } catch(e) {}
+	  }
   
 	  try {
 		// 1) 确保图片已预处理并具备稳定路径与尺寸
@@ -783,7 +954,7 @@ onGapChanging(e) {
 		for (let idx = 0; idx < images.length; idx++) {
 		  let current = images[idx];
 		  if (!current || !current.prepared || !current.preparedPath || !current.naturalWidth || !current.naturalHeight) {
-			try {
+                        try {
 			  const prepared = await this._prepareSingleImage(current || {}, idx);
 			  images[idx] = prepared;
 			  current = prepared;
@@ -804,8 +975,8 @@ onGapChanging(e) {
 		  doneProbe++;
 		  const p = Math.min(25, Math.round(1 + (doneProbe / images.length) * 24));
 		  this.setData({ stitchProgress: p });
-		}
-  
+                }
+
 		// 2) 计算目标（输出）尺寸 —— 基于天然像素，根据拼接方式确定
 		const allW = images.map(i => i.naturalWidth || i.width || 0).filter(n => n > 0);
 		const allH = images.map(i => i.naturalHeight || i.height || 0).filter(n => n > 0);
@@ -835,7 +1006,7 @@ onGapChanging(e) {
 			  const drawH = ih * (outW / iw);
 			  return sum + drawH + (idx ? gapPx : 0);
 			}, 0);
-		  } else {
+                } else {
 			// 原尺寸：保留原图，以最宽为画布宽度，居中对齐
 			outW = Math.max.apply(null, allW);
 			outH = images.reduce((sum, i, idx) => {
@@ -869,7 +1040,7 @@ onGapChanging(e) {
 			  const iw = Math.max(1, i.naturalWidth || i.width || 1);
 			  return sum + iw + (idx ? gapPx : 0);
 			}, 0);
-		  }
+                }
 		}
   
 		// 最终确保输出像素为整数
@@ -914,20 +1085,48 @@ onGapChanging(e) {
 			console.log('画布未超限，使用原始尺寸', outW, 'x', outH, '=', (outW*outH/1000000).toFixed(1), 'M像素');
 		}
 		this.setData({ stitchProgress: 30 });
-  
+
+		const targetW = outW;
+		const targetH = outH;
+		const basePixels = targetW * targetH;
+		const MAX_SUPER_SAMPLE = noCacheInThisStitch ? 1 : (sys.platform === 'ios' ? 2.2 : 2.6);
+		let superSample = 1;
+		if (basePixels > 0 && basePixels < MAX_TOTAL_PIXELS) {
+			const ratio = Math.sqrt(MAX_TOTAL_PIXELS / basePixels);
+			if (ratio > 1.01) {
+				const sideCap = Math.min(MAX_CANVAS_SIDE / targetW, MAX_CANVAS_SIDE / targetH);
+				superSample = Math.min(MAX_SUPER_SAMPLE, ratio, sideCap);
+			}
+		}
+		if (!Number.isFinite(superSample) || superSample < 1) superSample = 1;
+		let canvasOutW = Math.max(1, Math.round(targetW * superSample));
+		let canvasOutH = Math.max(1, Math.round(targetH * superSample));
+		// 再次兜底：避免四舍五入后超出像素上限（iOS 导出 buffer 限制更敏感）
+		let guard = 0;
+		while (canvasOutW * canvasOutH > MAX_TOTAL_PIXELS && guard < 20) {
+			superSample *= 0.96;
+			if (superSample < 1) { superSample = 1; break; }
+			canvasOutW = Math.max(1, Math.floor(targetW * superSample));
+			canvasOutH = Math.max(1, Math.floor(targetH * superSample));
+			guard++;
+		}
+		if (superSample > 1) {
+			console.log('启用超采样', superSample.toFixed(2), '画布尺寸', canvasOutW, 'x', canvasOutH);
+		}
+
 		// 3) 创建离屏画布（直接用逻辑像素，安卓可能需要回退主画布）
 		let octx;
 		try {
-			off = safeCreateOffscreenCanvas(node, outW, outH);
+			off = safeCreateOffscreenCanvas(node, canvasOutW, canvasOutH);
 			octx = off.getContext('2d');
-			console.log('离屏画布创建成功', outW, outH);
+			console.log('离屏画布创建成功', canvasOutW, canvasOutH);
 		} catch (eOff) {
 			console.warn('离屏画布创建失败，回退主画布', eOff);
 			usedMain = true;
 			off = null;
 			// 临时设置主画布为输出尺寸
-			node.width = outW;
-			node.height = outH;
+			node.width = canvasOutW;
+			node.height = canvasOutH;
 			octx = node.getContext('2d');
 			// 重置变换矩阵为单位矩阵，避免之前的scale残留
 			if (octx.setTransform) {
@@ -935,7 +1134,7 @@ onGapChanging(e) {
 			} else if (octx.resetTransform) {
 				octx.resetTransform();
 			}
-			console.log('使用主画布', outW, outH);
+			console.log('使用主画布', canvasOutW, canvasOutH);
 		}
 		
 		if (!octx) {
@@ -951,20 +1150,25 @@ onGapChanging(e) {
 		}
 		
 				octx.fillStyle = '#ffffff';
-				octx.fillRect(0, 0, outW, outH);
+		octx.fillRect(0, 0, canvasOutW, canvasOutH);
+
+		if (superSample !== 1) {
+			octx.scale(superSample, superSample);
+		}
 
 		// 4) 绘制每张图片，根据拼接方式计算位置与尺寸
-		const scaledGap = Math.round(gapPx * scaleDown);
+		// 不做 round，避免多次累计误差导致“逐张偏移/锯齿缝”
+		const scaledGap = gapPx * scaleDown;
 				let cursorX = 0, cursorY = 0;
 		
 		// 安卓离屏画布加载临时文件慢/不稳定，统一用主画布加载（快速且稳定）
 		const isAndroid = sys.platform === 'android';
-		const baseTimeout = isAndroid ? 3000 : 4000;
+		const baseTimeout = noCacheInThisStitch ? (isAndroid ? 9000 : 9000) : (isAndroid ? 3000 : 4000);
 		
 				for (let idx = 0; idx < images.length; idx++) {
 					const img = images[idx];
-		  let bmp = img && img._bitmap && img._bitmap.width ? img._bitmap : null;
 		  let filePath = img.preparedPath || img.tempFilePath;
+		  let bmp = noCacheInThisStitch ? null : this._getBitmapFromCache(filePath);
 		  console.log(`开始加载图片${idx}`, filePath);
 		  
 		  if (!bmp) {
@@ -981,7 +1185,7 @@ onGapChanging(e) {
 				try {
 				  bmp = await loadImageFrom(usedMain ? node : off, filePath, { timeout, preferGlobal });
 				  console.log(`图片${idx}加载成功`);
-				} catch (err) {
+                    } catch (err) {
 				  console.warn(`图片${idx}离屏加载失败，用主画布`, err);
 				  bmp = await loadImageFrom(node, filePath, { timeout, preferGlobal });
 				}
@@ -1008,6 +1212,7 @@ onGapChanging(e) {
 				  }
 				  img._cacheRegistered = true;
 				}
+				this._releaseBitmapByPath(filePath);
 				img.tempFilePath = savedConv;
 				img.preparedPath = savedConv;
 				img.prepared = true;
@@ -1032,8 +1237,13 @@ onGapChanging(e) {
 				throw new Error(`图片${idx}加载失败: ${e.message || e.errMsg || 'unknown'}`);
 			  }
 			}
-			img._bitmap = bmp;
-			dataDirty = true;
+			// 解码兜底：部分机型在内存压力下可能返回异常位图，直接触发重试/转码
+			if (!bmp || !bmp.width || !bmp.height) {
+				throw new Error(`图片${idx}解码异常`);
+			}
+			if (!noCacheInThisStitch) {
+				this._storeBitmapInCache(filePath, bmp);
+			}
 		  } else {
 			console.log(`图片${idx}使用缓存位图`);
 		  }
@@ -1056,7 +1266,7 @@ onGapChanging(e) {
 						drawWithOrientation(octx, bmp, 0, 0, bmp.width, bmp.height, 0, cursorY, outW, drawH, img.orientation);
 			  cursorY += drawH + scaledGap;
 			}
-		  } else {
+					} else {
 			if (mode === 'original') {
 			  // 原尺寸：保留原图宽高，按scaleDown缩放，上下居中
 			  const dw = Math.round(naturalW * scaleDown);
@@ -1069,16 +1279,33 @@ onGapChanging(e) {
 			  const drawW = Math.round(naturalW * (outH / naturalH));
 						drawWithOrientation(octx, bmp, 0, 0, bmp.width, bmp.height, cursorX, 0, drawW, outH, img.orientation);
 			  cursorX += drawW + scaledGap;
-			}
-		  }
+					}
+				}
 
 		  const p2 = 30 + Math.round(((idx + 1) / images.length) * 60);
 		  this.setData({ stitchProgress: Math.min(90, p2) });
+
+		  // 大任务：drawImage 可能是延迟提交的；先做一次极小采样触发 flush，再释放图片对象
+		  if (noCacheInThisStitch && bmp) {
+			try {
+				if (octx && octx.getImageData) {
+					// 1x1 采样，尽量触发渲染管线落盘（比整图 getImageData 便宜很多）
+					octx.getImageData(0, 0, 1, 1);
+				}
+			} catch(e0) {}
+			await this._sleep(0);
+			try { bmp.onload = null; bmp.onerror = null; } catch(e) {}
+			try { bmp.src = ''; } catch(e2) {}
+			if (typeof bmp.close === 'function') { try { bmp.close(); } catch(e3) {} }
+		  }
 		}
   
 		// 5) 导出
 		console.log('开始导出', usedMain ? '主画布' : '离屏画布');
-		const tempPath = await safeCanvasToTempFilePath(usedMain ? node : off, 'png', outW, outH);
+		// 为了清晰度：如果启用了超采样，优先导出超采样后的高分辨率（避免再次缩放导致变糊）
+		const exportW = canvasOutW;
+		const exportH = canvasOutH;
+		const tempPath = await safeCanvasToTempFilePath(usedMain ? node : off, 'png', canvasOutW, canvasOutH, exportW, exportH);
 		console.log('导出成功', tempPath.tempFilePath);
 		this.setData({ stitchProgress: 96 });
 
@@ -1099,10 +1326,16 @@ onGapChanging(e) {
 		// 8) 预览绘制
 				const previewBmp = await loadImageFrom(node, tempPath.tempFilePath);
 		newCtx.clearRect(0, 0, size.width, size.height);
-		const scaleFit = Math.min(size.width / outW, size.height / outH);
-		const pvW = Math.round(outW * scaleFit);
-		const pvH = Math.round(outH * scaleFit);
-		newCtx.drawImage(previewBmp, 0, 0, outW, outH, (size.width - pvW) / 2, (size.height - pvH) / 2, pvW, pvH);
+		const scaleFit = Math.min(size.width / exportW, size.height / exportH);
+		const pvW = Math.round(exportW * scaleFit);
+		const pvH = Math.round(exportH * scaleFit);
+		newCtx.drawImage(previewBmp, 0, 0, exportW, exportH, (size.width - pvW) / 2, (size.height - pvH) / 2, pvW, pvH);
+		// 预览绘制后尽快释放，降低内存峰值
+		try { previewBmp.onload = null; previewBmp.onerror = null; } catch(e) {}
+		try { previewBmp.src = ''; } catch(e2) {}
+		if (previewBmp && typeof previewBmp.close === 'function') {
+			try { previewBmp.close(); } catch(e3) {}
+		}
 
 		const finalSet = { stitchedTempPath: tempPath.tempFilePath, stitchProgress: 100, isStitching: false };
 		if (dataDirty) {

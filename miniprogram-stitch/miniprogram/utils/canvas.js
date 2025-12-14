@@ -202,9 +202,11 @@ function drawWithOrientation(ctx, img, sx, sy, sw, sh, dx, dy, dw, dh, orientati
 }
 
 // 将 Canvas 导出为临时文件，兼容新旧 API，并显式指定导出区域避免裁剪
-async function safeCanvasToTempFilePath(canvas, prefer = 'png', width, height) {
+async function safeCanvasToTempFilePath(canvas, prefer = 'png', width, height, destWidth, destHeight) {
     const w = Math.max(1, Math.floor(width || canvas.width || 0));
     const h = Math.max(1, Math.floor(height || canvas.height || 0));
+    const dw = Math.max(1, Math.floor(destWidth || w));
+    const dh = Math.max(1, Math.floor(destHeight || h));
     try {
         return await wx.canvasToTempFilePath({
             canvas,
@@ -212,8 +214,8 @@ async function safeCanvasToTempFilePath(canvas, prefer = 'png', width, height) {
             y: 0,
             width: w,
             height: h,
-            destWidth: w,
-            destHeight: h,
+            destWidth: dw,
+            destHeight: dh,
             fileType: prefer,
             quality: 1,
         });
@@ -225,8 +227,8 @@ async function safeCanvasToTempFilePath(canvas, prefer = 'png', width, height) {
                     y: 0,
                     width: w,
                     height: h,
-                    destWidth: w,
-                    destHeight: h,
+                    destWidth: dw,
+                    destHeight: dh,
                     fileType: prefer,
                     quality: 1,
                     success: resolve,
@@ -239,8 +241,23 @@ async function safeCanvasToTempFilePath(canvas, prefer = 'png', width, height) {
     }
 }
 
-// 兜底：尝试通过压缩生成可解码的中间文件（处理 HEIC 等不兼容情况）
+function _inferExtLower(path) {
+    try {
+        const pure = String(path || '').split('?')[0];
+        const m = pure.match(/\.([a-zA-Z0-9]+)$/);
+        return m ? String(m[1]).toLowerCase() : '';
+    } catch (e) {
+        return '';
+    }
+}
+
+// 兜底：仅在必要时转码（避免对 jpg/png 等已兼容图片重复压缩导致清晰度下降）
 async function tryTranscodeIfNeeded(path) {
+    const ext = _inferExtLower(path);
+    const looksHeic = ext === 'heic' || ext === 'heif';
+    // 已知兼容类型：不主动压缩
+    const looksSupported = ext === 'jpg' || ext === 'jpeg' || ext === 'png' || ext === 'webp' || ext === 'bmp' || ext === 'gif';
+    if (looksSupported && !looksHeic) return path;
     try {
         const res = await wx.compressImage({ src: path, quality: 100 });
         return res.tempFilePath || path;
