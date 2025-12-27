@@ -1,4 +1,7 @@
-<img src="./logo.png" alt="logo" width="200" />
+<p align="center">
+  <img src="./logo.png" alt="logo" width="200" />
+</p>
+
 ## 1. 产品介绍
 
 这是一个 **微信小程序：图片拼接工具**，支持将多张图片按 **竖向/横向** 进行拼接并导出保存。
@@ -12,7 +15,9 @@
 页面预览：
 [预览图（点击打开）](https://github.com/Iamctb/ImageStitching/blob/main/preview.PNG)
 
-![预览](./preview.PNG)
+<p align="center">
+  <img src="./preview.PNG" alt="预览" width="720" />
+</p>
 
 ## 2. 操作说明
 
