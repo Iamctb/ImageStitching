@@ -7,12 +7,17 @@ const IOS_BITMAP_BUDGET = 64 * 1000 * 1000; // 约 64MP
 const ANDROID_BITMAP_BUDGET = 42 * 1000 * 1000; // 约 42MP
 const DEFAULT_BITMAP_CACHE_LIMIT = 6;
 const ANDROID_BITMAP_CACHE_LIMIT = 4;
+const LOG_RING_LIMIT = 160;
+const SAVED_STORAGE_SOFT_LIMIT_MB = 8; // 微信上 saveFile 的可用额度在部分机型很小，触顶后改走临时路径模式
 
 Page({
 	data: {
 		images: [],
 		direction: 'vertical',
 		gap: 0,
+		// 默认拼接方式：竖向=最小宽，横向=最小高；默认图间距=0
+		verticalStitchMode: 'min',
+		horizontalStitchMode: 'min',
 		stitchedTempPath: '',
 		canvasPreviewHeight: 240,
 		selectedIndex: -1,
@@ -55,6 +60,185 @@ Page({
 		prepareProgress: 0,
 		prepareNote: '',
 		prepareTotalMB: 0,
+	},
+
+	_toastOnceMap: null,
+	_toastOnce(key, title) {
+		try {
+			if (!this._toastOnceMap) this._toastOnceMap = Object.create(null);
+			if (this._toastOnceMap[key]) return;
+			this._toastOnceMap[key] = 1;
+			wx.showToast({ title: title || '操作失败', icon: 'none' });
+		} catch (e) {}
+	},
+
+	// ====== Crash-safe logger（闪退后可在下次启动读取 storage / 文件）======
+	_logFilePath: '',
+	_logRing: null,
+	_initLogger() {
+		try {
+			const base = (wx.env && wx.env.USER_DATA_PATH) ? wx.env.USER_DATA_PATH : '';
+			this._logFilePath = base ? `${base}/stitch_debug.log` : '';
+			this._logRing = [];
+			// 尝试控制文件大小，避免无限增长
+			if (this._logFilePath) {
+				const fsm = wx.getFileSystemManager && wx.getFileSystemManager();
+				if (fsm && fsm.statSync) {
+					try {
+						const st = fsm.statSync(this._logFilePath);
+						if (st && st.size && st.size > 300 * 1024) {
+							try { fsm.writeFileSync(this._logFilePath, '', 'utf8'); } catch (e0) {}
+						}
+					} catch (e1) {}
+				}
+			}
+		} catch (e) {}
+	},
+
+	_log(tag, payload) {
+		const t = Date.now();
+		let msg = '';
+		try {
+			const p = payload === undefined ? '' : JSON.stringify(payload);
+			msg = `${t} ${tag}${p ? ' ' + p : ''}\n`;
+		} catch (e) {
+			msg = `${t} ${tag} [payload_unserializable]\n`;
+		}
+		try { console.log(tag, payload); } catch (e) {}
+		// ring buffer in storage（崩溃后仍可读）
+		try {
+			if (!this._logRing) this._logRing = [];
+			this._logRing.push(msg.trim());
+			if (this._logRing.length > LOG_RING_LIMIT) this._logRing.splice(0, this._logRing.length - LOG_RING_LIMIT);
+			if (wx.setStorageSync) wx.setStorageSync('stitch_log_ring', this._logRing);
+		} catch (e2) {}
+		// append to file（有些机型/版本更稳定）
+		try {
+			if (this._logFilePath) {
+				const fsm = wx.getFileSystemManager && wx.getFileSystemManager();
+				if (fsm && fsm.appendFileSync) {
+					fsm.appendFileSync(this._logFilePath, msg, 'utf8');
+				}
+			}
+		} catch (e3) {}
+	},
+
+	_applyCanvasLimitFromStorageOrFallback() {
+		const sys = wx.getSystemInfoSync();
+		const applyFallback = () => {
+			if (!this.deviceMaxCanvasSize) {
+				this.deviceMaxCanvasSize = sys.platform === 'ios' ? 12288 : 4096;
+			}
+			if (!this.deviceMaxCanvasPixels) {
+				const side = this.deviceMaxCanvasSize;
+				const pixelCap = sys.platform === 'android'
+					? side * Math.min(side, 4096)
+					: side * Math.min(side, 12288);
+				this.deviceMaxCanvasPixels = Math.max(pixelCap, 4096 * 2048);
+			}
+			this._log('canvasLimit.fallback', { platform: sys.platform, size: this.deviceMaxCanvasSize, pixels: this.deviceMaxCanvasPixels });
+		};
+		try {
+			const stored = wx.getStorageSync && wx.getStorageSync('canvasLimit');
+			if (stored && stored.platform === sys.platform && stored.size && stored.pixels) {
+				this.deviceMaxCanvasSize = stored.size;
+				if (sys.platform === 'ios') {
+					const iosLimit = 16384 * 1400;
+					this.deviceMaxCanvasPixels = Math.min(stored.pixels, iosLimit);
+				} else {
+					this.deviceMaxCanvasPixels = stored.pixels;
+				}
+				this._log('canvasLimit.cacheHit', stored);
+				return;
+			}
+		} catch (e) {}
+		applyFallback();
+	},
+
+	_isPersistentPath(path) {
+		if (!path) return false;
+		try {
+			if (SAVED_PATH_REG.test(path)) return true;
+			if (wx.env && wx.env.USER_DATA_PATH && String(path).startsWith(wx.env.USER_DATA_PATH)) return true;
+		} catch (e) {}
+		return false;
+	},
+
+	_pGetSavedFileList() {
+		return new Promise((resolve) => {
+			if (!wx.getSavedFileList) { resolve([]); return; }
+			wx.getSavedFileList({
+				success: (res) => resolve((res && res.fileList) ? res.fileList : []),
+				fail: () => resolve([]),
+			});
+		});
+	},
+
+	async _cleanupSavedStorage(keepPathsSet) {
+		// 尽量释放 savedFile 存储额度（不动当前正在用的文件），避免 errno 1300202 持续发生
+		try {
+			const keep = keepPathsSet || Object.create(null);
+			const list = await this._pGetSavedFileList();
+			if (!list || !list.length) return;
+			const total = list.reduce((s, f) => s + (f && f.size ? f.size : 0), 0);
+			const limit = SAVED_STORAGE_SOFT_LIMIT_MB * 1024 * 1024;
+			if (total <= limit) return;
+			// 从最早的开始删
+			const sorted = list.slice().sort((a, b) => (a.createTime || 0) - (b.createTime || 0));
+			let freed = 0;
+			for (const f of sorted) {
+				const p = f && f.filePath;
+				if (!p) continue;
+				if (keep[p]) continue;
+				try { await new Promise((r) => wx.removeSavedFile({ filePath: p, complete: r })); } catch (e0) {}
+				freed += (f.size || 0);
+				if (total - freed <= limit) break;
+			}
+			this._log('savedStorage.cleanup', { total, freed, limitMB: SAVED_STORAGE_SOFT_LIMIT_MB });
+		} catch (e) {}
+	},
+
+	// 缩略图加载“逐张串行”控制：避免一次性解码多张大图导致微信闪退
+	_thumbWaiters: null,
+	_thumbLoadKey: '',
+
+	_onInitThumbWaiters() {
+		if (!this._thumbWaiters) this._thumbWaiters = Object.create(null);
+	},
+
+	_waitThumbLoaded(id, timeout = 2500) {
+		if (!id) return Promise.resolve();
+		this._onInitThumbWaiters();
+		return new Promise((resolve) => {
+			const key = String(id);
+			if (this._thumbWaiters[key]) { resolve(); return; }
+			let done = false;
+			const finish = () => {
+				if (done) return;
+				done = true;
+				if (this._thumbWaiters[key] === finish) delete this._thumbWaiters[key];
+				resolve();
+			};
+			this._thumbWaiters[key] = finish;
+			setTimeout(finish, timeout);
+		});
+	},
+
+	onThumbLoad(e) {
+		const id = e && e.currentTarget && e.currentTarget.dataset ? e.currentTarget.dataset.id : '';
+		if (!id || !this._thumbWaiters) return;
+		const key = String(id);
+		const fn = this._thumbWaiters[key];
+		if (typeof fn === 'function') fn();
+	},
+
+	onThumbError(e) {
+		// 失败也放行，避免卡死队列
+		const id = e && e.currentTarget && e.currentTarget.dataset ? e.currentTarget.dataset.id : '';
+		if (!id || !this._thumbWaiters) return;
+		const key = String(id);
+		const fn = this._thumbWaiters[key];
+		if (typeof fn === 'function') fn();
 	},
 
 	// 空操作：用于遮罩拦截点击 
@@ -127,10 +311,13 @@ Page({
 	MAX_IMAGES: 9,
 
 	onLoad() {
+		this._initLogger();
+		this._log('page.onLoad', { ts: Date.now() });
 		if (!this._cacheRefs) {
 			this._cacheRefs = Object.create(null);
 		}
 		const info = wx.getSystemInfoSync();
+		this._log('sys.info', { platform: info.platform, model: info.model, brand: info.brand, system: info.system, pixelRatio: info.pixelRatio, sdkVersion: info.SDKVersion });
 		this._initBitmapCacheBudget(info);
 		const pxPerRpx = info.windowWidth / 750;
 		const thumbGapPx = Math.round(pxPerRpx * 12);
@@ -149,12 +336,14 @@ Page({
 		// 初始化布局，确保显示"上传图片"卡片
 		const laid = this._layoutImages(this.data.images || []);
 		this.setData({ images: laid });
-		
-		// 检测设备画布上限（异步，用于后续拼图优化）
-		this._detectDeviceLimit();
+
+		// 关键修复：首次进入不要自动做“画布上限探测”（会创建超大 offscreen canvas，叠加大图解码易导致微信闪退）
+		// 改为：先读缓存/用保守默认值；仅在拼图前且非大任务时再按需探测。
+		this._applyCanvasLimitFromStorageOrFallback();
 	},
 	
 	_detectDeviceLimit() {
+		this._log('canvasLimit.detect.start', {});
 		const sys = wx.getSystemInfoSync();
 		const applyFallback = () => {
 			if (!this.deviceMaxCanvasSize) {
@@ -167,7 +356,7 @@ Page({
 					: side * Math.min(side, 12288);
 				this.deviceMaxCanvasPixels = Math.max(pixelCap, 4096 * 2048);
 			}
-			console.log('使用平台默认上限', sys.platform, this.deviceMaxCanvasSize, this.deviceMaxCanvasPixels);
+			this._log('canvasLimit.detect.fallback', { platform: sys.platform, size: this.deviceMaxCanvasSize, pixels: this.deviceMaxCanvasPixels });
 		};
 
 		try {
@@ -180,7 +369,7 @@ Page({
 				} else {
 					this.deviceMaxCanvasPixels = stored.pixels;
 				}
-				console.log('命中缓存画布上限', stored.size, stored.pixels);
+				this._log('canvasLimit.detect.cacheHit', stored);
 				return;
 			}
 		} catch (e) {}
@@ -215,7 +404,7 @@ Page({
 					pixelCap = Math.min(pixelCap, 16384 * 8192);
 				}
 				this.deviceMaxCanvasPixels = pixelCap;
-				console.log('检测到2D画布上限', detected, '像素上限', this.deviceMaxCanvasPixels);
+				this._log('canvasLimit.detect.ok', { platform: sys.platform, size: detected, pixels: this.deviceMaxCanvasPixels });
 				try {
 					if (wx.setStorageSync) {
 						wx.setStorageSync('canvasLimit', { platform: sys.platform, size: detected, pixels: pixelCap });
@@ -439,11 +628,15 @@ Page({
 
 	async _ensureSavedFile(path) {
 		if (!path) throw new Error('invalid path');
-		if (SAVED_PATH_REG.test(path)) {
+		// 若本次会话已禁用 saveFile（存储额度触顶），直接走临时路径
+		if (this._disableSaveFile) {
+			return path;
+		}
+		if (this._isPersistentPath(path)) {
 			this._registerCacheFile(path);
 			return path;
 		}
-		return await new Promise((resolve, reject) => {
+		const tryOnce = () => new Promise((resolve, reject) => {
 			wx.saveFile({
 				tempFilePath: path,
 				success: (res) => {
@@ -458,6 +651,28 @@ Page({
 				fail: reject,
 			});
 		});
+		try {
+			return await tryOnce();
+		} catch (e) {
+			const msg = e && (e.errMsg || e.message) ? String(e.errMsg || e.message) : '';
+			const errno = e && typeof e.errno === 'number' ? e.errno : 0;
+			if (errno === 1300202 || msg.includes('file storage limit is exceeded')) {
+				// 触顶：先清理历史 savedFile，再切换到临时路径模式（避免后续一直失败）
+				try {
+					const keep = Object.create(null);
+					for (const it of (this.data.images || [])) {
+						if (it && it.preparedPath) keep[it.preparedPath] = 1;
+						if (it && it.tempFilePath) keep[it.tempFilePath] = 1;
+					}
+					await this._cleanupSavedStorage(keep);
+				} catch (e2) {}
+				this._disableSaveFile = true;
+				this._toastOnce('savedStorageFull', '缓存空间不足，已改为临时加载');
+				this._log('saveFile.storageLimit', { errno, msg });
+				return path;
+			}
+			throw e;
+		}
 	},
 
 	async _prepareSingleImage(img, index = 0) {
@@ -477,6 +692,14 @@ Page({
 			path = conv;
 			info = await this._pGetImageInfo(path);
 		}
+		// 大图：让出一帧给 GC/渲染（多图大图时可显著降低闪退概率）
+		try {
+			const w0 = info && info.width ? info.width : 0;
+			const h0 = info && info.height ? info.height : 0;
+			if (w0 * h0 >= 20 * 1000 * 1000) {
+				await this._sleep(16);
+			}
+		} catch (e) {}
 		let type = info && info.type ? String(info.type).toLowerCase() : '';
 		if (type && !SUPPORTED_IMAGE_TYPES.includes(type)) {
 			const conv2 = await tryTranscodeIfNeeded(path);
@@ -494,6 +717,10 @@ Page({
 		} catch (e) {}
 
 		const savedPath = await this._ensureSavedFile(path);
+		const savedOk = this._isPersistentPath(savedPath);
+		if (fileSize >= 8 * 1024 * 1024) {
+			await this._sleep(16);
+		}
 		const prepared = {
 			...cloned,
 			sourcePath: originPath,
@@ -507,7 +734,8 @@ Page({
 			orientation: info && info.orientation ? info.orientation : (cloned.orientation || 1),
 			fileSize,
 			prepared: true,
-			_cacheRegistered: true,
+			_cacheRegistered: !!savedOk,
+			noSave: !savedOk,
 		};
 		return prepared;
 	},
@@ -784,6 +1012,9 @@ Page({
 	// 选择图片：追加到现有列表；开发者工具优先 chooseMessageFile；失败转码兜底
 	onChooseImages: async function() {
     try {
+			// 每次选图重置一次 toast once 状态，避免跨批次不提示
+			this._toastOnceMap = null;
+			this._log('chooseImages.start', { currentCount: (this.data.images || []).length });
 			const sys = wx.getSystemInfoSync();
 			let files = [];
 			let cancelled = false;
@@ -822,36 +1053,30 @@ Page({
 			}
 
 			if (cancelled || !files.length) { return; }
+
+			// 体验优化：一回到页面立刻显示“准备图片”进度遮罩，并让出一次事件循环，确保 UI 先渲染出来
+			this.setData({
+				isPreparing: true,
+				prepareProgress: 1,
+				prepareNote: '正在准备图片…',
+				prepareTotalMB: 0,
+			});
+			this._log('chooseImages.maskShown', { selected: files.length });
+			await this._sleep(0);
         const detail = [];
         for (const f of files) {
-				let path = f.tempFilePath;
-				if (!path) { continue; }
-				let info;
-				// 若 chooseMedia 已返回宽高，直接使用，减少对 getImageInfo 依赖
-				if (f && f.width && f.height) {
-					info = { width: f.width, height: f.height, type: '', orientation: 1 };
-				} else {
-					// 某些 HEIC/LivePhoto 可能直接 getImageInfo 失败，做两级兜底
-				try {
-					info = await this._pGetImageInfo(path);
-				} catch (e) {
-						try {
-					path = await tryTranscodeIfNeeded(path);
-					info = await this._pGetImageInfo(path);
-						} catch (e2) {
-							// 最终兜底：保留路径，宽高暂缺，方向按 1 处理，避免整体失败
-							info = { width: 0, height: 0, type: '', orientation: 1 };
-						}
-					}
-				}
+				const path = f && f.tempFilePath;
+				if (!path) continue;
+				// 关键优化：此处不再对每张图提前 getImageInfo/转码（会触发解码，易引发多图大图闪退）
+				// 统一交给 _prepareImages -> _prepareSingleImage 严格逐张处理并带进度/让出。
             detail.push({
 					tempFilePath: path,
-                width: info.width,
-                height: info.height,
-                type: info.type,
-                orientation: info.orientation
+					// 若 chooseMedia 带了宽高可先存着，后续仍以 getImageInfo 为准
+					width: f && f.width ? f.width : 0,
+					height: f && f.height ? f.height : 0,
             });
         }
+		this._log('chooseImages.pathsReady', { count: detail.length });
         // 追加到现有列表后去重，并限制到 MAX_IMAGES
         const existed = this.data.images ? this.data.images.slice() : [];
         const merged = existed.concat(detail);
@@ -864,14 +1089,12 @@ Page({
             }
             if (dedup.length >= this.MAX_IMAGES) break;
         }
-		// 体验优化：用户选择完图片后立刻显示进度遮罩（不再等待统计完成）
-		this.setData({
-			isPreparing: true,
-			prepareProgress: 1,
-			prepareNote: '正在准备图片…',
-			prepareTotalMB: 0,
-		});
 
+		// 为每个条目生成稳定 id（用于缩略图串行加载控制）
+		if (!this._imgIdSeed) this._imgIdSeed = 1;
+		for (const it of dedup) {
+			if (!it._id) it._id = `img_${Date.now()}_${this._imgIdSeed++}`;
+		}
 		// 统计图片总大小：仅用于展示与策略判断，不阻塞遮罩出现
 		let totalBytes = 0;
 		for (const it of dedup) {
@@ -885,20 +1108,63 @@ Page({
 		}
 		const totalMB = Math.round((totalBytes / (1024 * 1024)) * 10) / 10;
 		this.setData({ prepareTotalMB: totalMB });
-		let preparedList;
+		this._log('chooseImages.totalSize', { totalBytes, totalMB });
+		// 严格“一张一张”预处理 + 一张一张让缩略图加载完成再追加，降低首次大批量图片解码导致的微信闪退概率
+		const existedPaths = Object.create(null);
+		for (const it of existed) {
+			if (it && it.tempFilePath) existedPaths[it.tempFilePath] = 1;
+			if (it && it.preparedPath) existedPaths[it.preparedPath] = 1;
+		}
+		const newOnes = dedup.filter(it => it && it.tempFilePath && !existedPaths[it.tempFilePath]);
+
+		let working = existed.slice();
+		// 先不把大量新图一次性塞进视图层，避免同时触发多张 <image> 解码
+		this.setData({ images: this._layoutImages(working), stitchedTempPath: '', stitchProgress: 0 });
+		await this._sleep(0);
+
 		try {
-			preparedList = await this._prepareImages(dedup, (done, total) => {
-				const pct = Math.min(99, Math.max(1, Math.round((done / total) * 100)));
-				this.setData({
-					prepareProgress: pct,
-					prepareNote: `正在加载图片 ${done}/${total}`,
-				});
-			});
+			const total = newOnes.length;
+			for (let i = 0; i < total; i++) {
+				const raw = newOnes[i];
+				const pct = Math.min(99, Math.max(1, Math.round(((i) / Math.max(1, total)) * 100)));
+				this.setData({ prepareProgress: pct, prepareNote: `正在加载图片 ${i}/${total}` });
+				await this._sleep(0);
+
+				let prepared = null;
+				try {
+					prepared = await this._prepareSingleImage(raw, i);
+					prepared._id = raw._id;
+				} catch (e) {
+					// 文件存储空间上限：saveFile 总额度触顶（之后若继续 saveFile 会“雪崩式失败”）
+					const msg = (e && (e.errMsg || e.message)) ? String(e.errMsg || e.message) : '';
+					const errno = e && typeof e.errno === 'number' ? e.errno : 0;
+					if (errno === 1300202 || msg.includes('file storage limit is exceeded')) {
+						this._toastOnce('savedStorageFull', '缓存空间不足，已改为临时加载');
+						this._log('prepareSingle.fail.storageLimit', { errno, msg });
+					} else {
+						this._log('prepareSingle.fail', { errno, msg });
+					}
+					console.warn('单张预处理失败，跳过', e);
+					continue;
+				}
+				working.push(prepared);
+				const laid = this._layoutImages(working);
+				this.setData({ images: laid });
+
+				// 大量大图场景：等待当前新增缩略图加载/超时后再处理下一张（最大限度降低并发解码）
+				await this._waitThumbLoaded(prepared._id, 3000);
+				await this._sleep(16);
+			}
+			this.setData({ prepareProgress: 100, prepareNote: `正在加载图片 ${total}/${total}` });
+			await this._sleep(50);
 		} finally {
 			this.setData({ isPreparing: false, prepareProgress: 0, prepareNote: '', prepareTotalMB: 0 });
+			this._log('chooseImages.done', {});
 		}
-		const laid = this._layoutImages(preparedList);
-		this.setData({ images: laid, stitchedTempPath: '', stitchProgress: 0 });
+
+		// 最终确保布局正确
+		const finalLaid = this._layoutImages(working);
+		this.setData({ images: finalLaid, stitchedTempPath: '', stitchProgress: 0 });
     } catch (e) {
 			const msg = (e && e.errMsg || '').includes('cancel') ? '已取消' : '选择失败';
 			wx.showToast({ title: msg, icon: 'none' });
@@ -925,6 +1191,7 @@ onGapChanging(e) {
   
 	// 复位
 	this.setData({ isStitching: true, stitchProgress: 1, stitchedTempPath: '' });
+	this._log('stitch.start', { direction, gap, count: images.length, totalBytes: (images || []).reduce((s, it) => s + (it && it.fileSize ? it.fileSize : 0), 0) });
   
 		const query = wx.createSelectorQuery();
 		query.select('#preview').fields({ node: true, size: true }).exec(async (res) => {
@@ -942,10 +1209,14 @@ onGapChanging(e) {
 	  let dataDirty = false;
 	  // 大任务可靠性优先：禁用位图缓存、禁用超采样、逐张强制 flush 后再释放，避免“黑白渐变块”
 	  const totalBytes = (images || []).reduce((s, it) => s + (it && it.fileSize ? it.fileSize : 0), 0);
-	  const bigTask = (images && images.length >= 8) || totalBytes >= 30 * 1024 * 1024;
+	  const bigTask = (images && images.length >= 7) || totalBytes >= 25 * 1024 * 1024;
 	  const noCacheInThisStitch = !!bigTask;
 	  if (noCacheInThisStitch) {
 		try { this._clearBitmapCache(); } catch(e) {}
+	  }
+	  // 仅在真正拼图且非大任务时，按需探测画布上限（提高质量）；大任务不探测，避免额外大内存分配
+	  if (!noCacheInThisStitch && (!this.deviceMaxCanvasSize || !this.deviceMaxCanvasPixels)) {
+		try { this._detectDeviceLimit(); } catch (e0) {}
 	  }
   
 	  try {
@@ -1297,9 +1568,9 @@ onGapChanging(e) {
 			try { bmp.onload = null; bmp.onerror = null; } catch(e) {}
 			try { bmp.src = ''; } catch(e2) {}
 			if (typeof bmp.close === 'function') { try { bmp.close(); } catch(e3) {} }
-		  }
-		}
-  
+					}
+				}
+
 		// 5) 导出
 		console.log('开始导出', usedMain ? '主画布' : '离屏画布');
 		// 为了清晰度：如果启用了超采样，优先导出超采样后的高分辨率（避免再次缩放导致变糊）

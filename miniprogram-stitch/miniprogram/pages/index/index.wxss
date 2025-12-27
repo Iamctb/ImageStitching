@@ -55,7 +55,7 @@
 .barGlyph { font-size: 36rpx; line-height: 1; }
 
 /* 底部提示小字 */
-.tips { color: #9ca3af; font-size: 22rpx; display: flex; flex-direction: column; gap: 6rpx; margin: 16rpx 8rpx 140rpx 8rpx; }
+.tips { color: #9ca3af; font-size: 26rpx; display: flex; flex-direction: column; gap: 6rpx; margin: 16rpx 8rpx 140rpx 8rpx; }
 .tipsInner { transition: opacity 0.2s ease; display: flex; flex-direction: column; gap: 6rpx; }
 .tipsInner.transparent { opacity: 0; }
 

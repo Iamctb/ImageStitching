@@ -5,7 +5,15 @@
     <block wx:for="{{images}}" wx:key="tempFilePath">
       <movable-view class="thumbMV" direction="all" inertia="false" out-of-bounds="true" damping="60" friction="2" x="{{item.x}}" y="{{item.y}}" style="width: {{thumbWpx}}px; height: {{thumbWpx}}px;" data-index="{{index}}" bindtouchstart="onDragStart" bindchange="onDragMoving" bindtouchend="onDragEnd">
         <view class="thumbBox {{selectedIndex===index?'selected':''}}" data-index="{{index}}" catchtap="onTapThumb" bindlongpress="onLongPressThumb">
-          <image class="thumbImg" src="{{item.tempFilePath}}" mode="aspectFill"/>
+          <image
+            class="thumbImg"
+            src="{{item.tempFilePath}}"
+            mode="aspectFill"
+            lazy-load="true"
+            bindload="onThumbLoad"
+            binderror="onThumbError"
+            data-id="{{item._id}}"
+          />
           <view wx:if="{{multiSelectMode}}" class="selBadge {{item.selected?'checked':''}}" data-index="{{index}}" catchtap="onToggleSelect">
             <text wx:if="{{item.selected}}" class="selTick">✓</text>
           </view>
@@ -27,10 +35,9 @@
       <text>温馨提示：</text>
       <text> 1. 长按图片拖拽可变换位置</text>
       <text> 2. 长按图片可选择要删除的图片</text>  
-      <text> 3. 长按底部拼接按钮可进行拼图设置</text>
-      <text> 4. 拼接完成后的预览页面，长按图片可保存拼接图</text>
-      <text> 5. 熟悉提示后，双击温馨提示区域，可隐藏/显示温馨提示</text>
-      <text> 6. 当图片太大超过应用/微信/小程序的尺寸阈值时，也会适当进行压缩</text>
+      <text> 3. 拼接完成后的预览页面，长按图片可保存拼接图</text>
+      <text> 4. 不建议上传单张超过25MB以上的超大图像</text>
+      <text> 5. 熟悉提示: 双击温馨提示区域，可隐藏/显示温馨提示</text>
     </view>
   </view>
 
@@ -65,7 +72,7 @@
 
   <!-- 固定底栏：竖向/横向拼接（支持长按设置间距） -->
   <view class="fixedBar" wx:if="{{!multiSelectMode}}">
-    <button class="barBtn" bindtap="onStitchVertical" bindlongpress="onLongPressVertical" disabled="{{isStitching}}">
+    <button class="barBtn" bindtap="onStitchVertical" disabled="{{isStitching}}">
       <view class="barIcon v">
         <view class="seg"></view>
         <view class="seg"></view>
@@ -73,7 +80,7 @@
       </view>
       <text class="barText">竖向拼接</text>
     </button>
-    <button class="barBtn" bindtap="onStitchHorizontal" bindlongpress="onLongPressHorizontal" disabled="{{isStitching}}">
+    <button class="barBtn" bindtap="onStitchHorizontal" disabled="{{isStitching}}">
       <view class="barIcon h">
         <view class="seg"></view>
         <view class="seg"></view>
