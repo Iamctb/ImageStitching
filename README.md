@@ -16,7 +16,7 @@
 [预览图（点击打开）](https://github.com/Iamctb/ImageStitching/blob/main/preview.PNG)
 
 <p align="center">
-  <img src="./preview.PNG" alt="预览" width="720" />
+  <img src="./preview.PNG" alt="预览" width="360" />
 </p>
 
 ## 2. 操作说明
